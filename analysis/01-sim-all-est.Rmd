@@ -1,0 +1,286 @@
+---
+title: "Paired CRT Simulations"
+author: "Charlotte Mann"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(knitr.kable.NA = '')
+library(tidyr)
+library(dplyr)
+library(foreach)
+library(parallel)
+library(doParallel)
+library(ggplot2)
+library(sandwich)
+library(stringr)
+library(lme4)
+```
+
+Load package from Github Repo `dRCT`
+```{r}
+if(!("dRCT" %in% installed.packages())) install_github("manncz/dRCT/dRCT")
+library(dRCT)
+```
+
+Load all helper functions
+```{r}
+source("00-helper-functions.R")
+source("00-sim-helpers.R")
+```
+
+Estimators with associate labels
+```{r}
+methds = c("dm", "wlsn", "wlsx", "wlsxn",
+           "ht", "drd", "drdcov", "htadjn", "htadjcov",
+           "fe", "fen", "feadj", "feadjn",
+           "amw",
+           "re", "ren", "readjn", 
+           "p_mi", "p_wlsn","p_wlsx", "p_wlsxn")
+
+labels = c("hajek","wls n", "wls x", "wls (n,x)",
+           "horvitz-thompson", "des raj n", "des raj (n,x)", "su-ding n", "su-ding (n,x)",
+           "fixed-effects", "fixed-effects n", "fixed-effects x", "fixed-effects (n,x)",
+           "imai", 
+           "random-effects", "random-effects n", "random-effects (n,x)",
+           "ploop MI", "ploop n","ploop x", "ploop (n,x)")
+```
+
+Set up size and treatment effect settings
+```{r}
+nparams <- list()
+nparams[["pair_unif"]] <- c("a"=80,"b"=220,"c"=-27,"d"=27)
+nparams[["unif"]] <- c("a"=0,"b"=0,"c"=75,"d"=225)
+
+tauparams <- list()
+tauparams[["const"]] <- c("tau0" = .4, "tauv" = 0, "b"= 0, "a" = 150)
+tauparams[["n_fun"]] <- c("tau0" = .4, "tauv" = 0, "b"= sqrt(.02/1900), "a" = 150)
+```
+
+## Simulation for 20 Pairs
+
+```{r, message = FALSE, warning=FALSE}
+numCores <- detectCores()
+registerDoParallel(numCores)
+
+sim.list <- list()
+x = 1
+
+for(paireff in 0:1){
+    for(ntype in names(nparams)){
+      for(tautype in names(tauparams)){
+        
+         print(paste("(",x,")", "samp size:", ntype,
+                      "tau:", tautype,
+                      "paireff:", paireff))
+          
+          # adjust parameters to keep similar amounts of variability in outcomes, just explained
+          # by covariate, pairing, or sample size
+          if(paireff == 1) pv = 0.2
+          if(paireff == 1) covcv = .0125
+          if(paireff == 0) pv = 0 
+          if(paireff == 0) covcv = 0.2125
+          
+          print(paste("pair var:",pv,"add cov var:", covcv))
+
+          sim.list <- run_prct_sim(n.dat = 1, n.treat = 2,
+                                  M = 20, nimin = nparams[[ntype]]["a"], nimax = nparams[[ntype]]["b"],
+                                  mkimin = nparams[[ntype]]["c"], mkimax = nparams[[ntype]]["d"],
+                                  alpha = 0, pairv = pv, clusterv = .25 - pv - covcv, indv = 1,
+                                  cov_clustv = covcv,
+                                  base_tau = tauparams[[tautype]]["tau0"],
+                                  tau_var = tauparams[[tautype]]["tauv"],
+                                  tau_fslope = tauparams[[tautype]]["b"],
+                                  tau_fintercept = tauparams[[tautype]]["a"],
+                                  tau_gslope = 0,
+                                  nbeta = 0,
+                                  loc_shift = 0,
+                                  simfun = all_est_sims,
+                                  seed = 2795)
+
+          result.dat <- clean_sim_list(sim.list,methods = methds, labs = labels)
+
+          dat.gen.results = result.dat$dat.gen.results
+          results.sum = result.dat$results.sum
+
+          save(dat.gen.results,results.sum, file =  paste0("temp/sims_m20_n150/simout-n_", ntype, "-tau_", tautype,"-paireff=", paireff, "-covout", ".Rdata"))
+    
+          x = x+1
+          
+      }
+    }
+}
+stopImplicitCluster()
+```
+
+## Simulation for 200 Pairs
+
+```{r, message = FALSE, warning=FALSE}
+numCores <- detectCores()
+registerDoParallel(numCores)
+
+sim.list <- list()
+x = 1
+
+for(paireff in 0:1){
+    for(ntype in names(nparams)){
+      for(tautype in names(tauparams)){
+        
+         print(paste("(",x,")", "samp size:", ntype,
+                      "tau:", tautype,
+                      "paireff:", paireff))
+          
+          # adjust parameters to keep similar amounts of variability in outcomes, just explained
+          # by covariate, pairing, or sample size
+          if(paireff == 1) pv = 0.2
+          if(paireff == 1) covcv = .0125
+          if(paireff == 0) pv = 0 
+          if(paireff == 0) covcv = 0.2125
+          
+          print(paste("pair var:",pv,"add cov var:", covcv))
+
+          sim.list <- run_prct_sim(n.dat = 1, n.treat = 2,
+                                  M = 200, nimin = nparams[[ntype]]["a"], nimax = nparams[[ntype]]["b"],
+                                  mkimin = nparams[[ntype]]["c"], mkimax = nparams[[ntype]]["d"],
+                                  alpha = 0, pairv = pv, clusterv = .25 - pv - covcv, indv = 1,
+                                  cov_clustv = covcv,
+                                  base_tau = tauparams[[tautype]]["tau0"],
+                                  tau_var = tauparams[[tautype]]["tauv"],
+                                  tau_fslope = tauparams[[tautype]]["b"],
+                                  tau_fintercept = tauparams[[tautype]]["a"],
+                                  tau_gslope = 0,
+                                  nbeta = 0,
+                                  loc_shift = 0,
+                                  simfun = all_est_sims,
+                                  seed = 2795)
+
+          result.dat <- clean_sim_list(sim.list,methods = methds, labs = labels)
+
+          dat.gen.results = result.dat$dat.gen.results
+          results.sum = result.dat$results.sum
+
+          save(dat.gen.results,results.sum, file =  paste0("temp/sims_m200_n150/simout-n_", ntype, "-tau_", tautype,"-paireff=", paireff, "-covout", ".Rdata"))
+    
+          x = x+1
+          
+      }
+    }
+}
+stopImplicitCluster()
+```
+
+# Outcomes Correlated with Cluster Size
+
+## Simulation for 20 pairs
+
+```{r, message = FALSE, warning=FALSE}
+numCores <- detectCores()
+registerDoParallel(numCores)
+
+sim.list <- list()
+x = 1
+
+for(paireff in 0:1){
+    for(ntype in names(nparams)){
+      for(tautype in names(tauparams)){
+        
+         print(paste("(",x,")", "samp size:", ntype,
+                      "tau:", tautype,
+                      "paireff:", paireff))
+          
+          # adjust parameters to keep similar amounts of variability in outcomes, just explained
+          # by covariate, pairing, or sample size
+          if(paireff == 1) pv = 0.1875
+          if(paireff == 1) covcv = .0125
+          if(paireff == 0) pv = 0 
+          if(paireff == 0) covcv = 0.2
+          
+          print(paste("pair var:",pv,"add cov var:", covcv))
+
+          sim.list <- run_prct_sim(n.dat = 1, n.treat = 2,
+                                  M = 20, nimin = nparams[[ntype]]["a"], nimax = nparams[[ntype]]["b"],
+                                  mkimin = nparams[[ntype]]["c"], mkimax = nparams[[ntype]]["d"],
+                                  alpha = 0, pairv = pv, clusterv = .2375 - pv - covcv, indv = 1,
+                                  cov_clustv = covcv,
+                                  base_tau = tauparams[[tautype]]["tau0"],
+                                  tau_var = tauparams[[tautype]]["tauv"],
+                                  tau_fslope = tauparams[[tautype]]["b"],
+                                  tau_fintercept = tauparams[[tautype]]["a"],
+                                  tau_gslope = 0,
+                                  nbeta = sqrt(.0125/1900),
+                                  loc_shift = 0,
+                                  simfun = all_est_sims,
+                                  seed = 2795)
+
+          result.dat <- clean_sim_list(sim.list,methods = methds, labs = labels)
+
+          dat.gen.results = result.dat$dat.gen.results
+          results.sum = result.dat$results.sum
+
+          save(dat.gen.results,results.sum, file =  paste0("temp/sims_m20_n150_neff/simout-n_", ntype, "-tau_", tautype,"-paireff=", paireff, "-covout", ".Rdata"))
+    
+          x = x+1
+          
+      }
+    }
+}
+stopImplicitCluster()
+```
+
+## Simulation for 200 Pairs
+
+```{r, message = FALSE, warning=FALSE}
+numCores <- detectCores()
+registerDoParallel(numCores)
+
+sim.list <- list()
+x = 1
+
+for(paireff in 0:1){
+    for(ntype in names(nparams)){
+      for(tautype in names(tauparams)){
+        
+         print(paste("(",x,")", "samp size:", ntype,
+                      "tau:", tautype,
+                      "paireff:", paireff))
+          
+          # adjust parameters to keep similar amounts of variability in outcomes, just explained
+          # by covariate, pairing, or sample size
+          if(paireff == 1) pv = 0.1875
+          if(paireff == 1) covcv = .0125
+          if(paireff == 0) pv = 0 
+          if(paireff == 0) covcv = 0.2
+          
+          print(paste("pair var:",pv,"add cov var:", covcv))
+
+          sim.list <- run_prct_sim(n.dat = 1, n.treat = 2,
+                                  M = 200, nimin = nparams[[ntype]]["a"], nimax = nparams[[ntype]]["b"],
+                                  mkimin = nparams[[ntype]]["c"], mkimax = nparams[[ntype]]["d"],
+                                  alpha = 0, pairv = pv, clusterv = .2375 - pv - covcv, indv = 1,
+                                  cov_clustv = covcv,
+                                  base_tau = tauparams[[tautype]]["tau0"],
+                                  tau_var = tauparams[[tautype]]["tauv"],
+                                  tau_fslope = tauparams[[tautype]]["b"],
+                                  tau_fintercept = tauparams[[tautype]]["a"],
+                                  tau_gslope = 0,
+                                  nbeta = sqrt(.0125/1900),
+                                  loc_shift = 0,
+                                  simfun = all_est_sims,
+                                  seed = 2795)
+
+          result.dat <- clean_sim_list(sim.list,methods = methds, labs = labels)
+
+          dat.gen.results = result.dat$dat.gen.results
+          results.sum = result.dat$results.sum
+
+          save(dat.gen.results,results.sum, file =  paste0("temp/sims_m200_n150_neff/simout-n_", ntype, "-tau_", tautype,"-paireff=", paireff, "-covout", ".Rdata"))
+    
+          x = x+1
+          
+      }
+    }
+}
+stopImplicitCluster()
+```

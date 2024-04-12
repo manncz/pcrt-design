@@ -1,0 +1,104 @@
+---
+title: "CTA Analysis"
+author: "Charlotte Mann"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyr)
+library(dplyr)
+library(sandwich)
+library(foreach)
+library(dRCT)
+library(tibble)
+library(kableExtra)
+library(parallel)
+library(doParallel)
+library(ggplot2)
+library(stringr)
+library(xtable)
+library(lme4)
+source("00-helper-functions.R")
+```
+
+## Load CTAI data
+
+This data cannot be shared in this repository. See https://github.com/manncz/aeis-aux-rct for information on the data build.
+
+```{r}
+load("../../cta-aeis/data/HS_MSdata.RData")
+```
+
+## Clean CTA Data
+
+```{r}
+grdsizes <- covsE_noscale %>%
+  select(CAMPUS, all_stud_n = CPETALLC_67, grade8_n = CPETG08C_67, grade9_n = CPETG09C_67)
+```
+
+Create analytical dataset with only needed variables
+```{r}
+dat <- schools %>%
+  select(CAMPUS, trt, pair, GRDTYPE, GRDSPAN, grdlvl, 
+         outmA08, outmA09, outhA08, outhA09, premA, prehA) %>%
+  left_join(grdsizes, by = "CAMPUS") %>%
+  mutate(grade_n = case_when(grdlvl == "H" ~ grade9_n,
+                             TRUE ~ grade8_n),
+         out08 = case_when(grdlvl == "H" ~ outhA08,
+                           TRUE ~ outmA08),
+         out09 = case_when(grdlvl == "H" ~ outhA09,
+                           TRUE ~ outmA08),
+         pre = case_when(grdlvl == "H" ~ prehA,
+                           TRUE ~ premA)
+         )
+
+dat.wide <- dat %>%
+  select(trt, pair, grdlvl, all_stud_n, grade_n, pre) %>% 
+  pivot_wider(names_from = trt, values_from = c(all_stud_n, grade_n, pre))
+
+save(dat, dat.wide, file = "temp/cta-dat-clean.Rdata")
+```
+
+## EDA
+### Explore grade and school sizes
+
+```{r}
+size_balance <- dat %>%
+  select(trt, pair, grdlvl, all_stud_n, grade_n) %>% 
+  pivot_wider(names_from = trt, values_from = c(all_stud_n, grade_n)) %>%
+  arrange(grdlvl)
+
+size_balance %>%
+  kable() %>%
+  kable_styling()
+```
+
+
+```{r}
+size_balance %>%
+  group_by(grdlvl) %>%
+  summarize(across(all_stud_n_0:grade_n_1, mean))
+```
+
+### Explore other balance
+
+```{r}
+pretest <- dat %>%
+  select(trt, pair, grdlvl, pre) %>% 
+  pivot_wider(names_from = trt, values_from = pre, names_glue = "{.value}_{trt}") %>%
+  arrange(grdlvl)
+
+pretest %>%
+  kable()
+
+pretest %>%
+  group_by(grdlvl) %>%
+  summarize(across(starts_with("pre"), mean))
+```
+
+R2 of pretest
+```{r}
+summary(lm(out08~pre, data = dat, weights = grade_n))
+```

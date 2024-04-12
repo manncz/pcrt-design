@@ -1,0 +1,1282 @@
+---
+title: "Manuscript Figures"
+author: "Charlotte Mann"
+date: '`r Sys.Date()`'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(foreach)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(stringr)
+library(ggpubr)
+library(xtable)
+library(xlsx)
+library(ggh4x)
+library(forcats)
+library(readr)
+library(kableExtra)
+```
+
+
+```{r}
+labels=c()
+for(paireff in 0:1){
+  for(ntype in c("pair_unif","unif")){
+    for(tautype in c("const","n_fun")){
+      labels <- c(labels, paste0("n_",ntype,"-tau_", tautype,"-paireff=", paireff))
+    }
+  }
+}
+```
+
+
+```{r}
+sumdat = foreach(x = labels, .combine = rbind) %do% {
+  load(paste0("temp/sims_m20_n150/simout-", x, "-covout.Rdata"))
+  
+   temp = results.sum %>%
+    mutate(setting = x, size = 20)
+   
+  load(paste0("temp/sims_m200_n150/simout-", x, "-covout.Rdata"))
+  
+   dat = results.sum %>%
+    mutate(setting = x, size = 200) %>%
+    rbind(temp)
+   
+}
+
+alldat =  foreach(x = labels, .combine = rbind) %do% {
+  load(paste0("temp/sims_m20_n150/simout-", x, "-covout.Rdata"))
+  
+  temp = dat.gen.results %>%
+    mutate(setting = x, size = 20,
+            datframe = paste0("dat", rep(1:400, each = 104)))
+  
+   load(paste0("temp/sims_m200_n150/simout-", x, "-covout.Rdata"))
+  
+   dat = dat.gen.results %>%
+    mutate(setting = x, size = 200,
+            datframe = paste0("dat", rep(1:400, each = 104))) %>%
+    rbind(temp)
+   
+}
+```
+
+give clean names to settings
+```{r}
+alldat <- alldat %>%
+  mutate(n = case_when(str_detect(setting, "n_pair_unif") ~ "Matched Size",
+                       TRUE ~ "Varied Size"),
+         tau_type = case_when(str_detect(setting,"tau_const") ~ "Treat Const",
+                              TRUE ~ "Treat Corr Size"),
+         paireff = case_when(str_detect(setting, "=1") ~ "Pair Effect",
+                             TRUE ~ "No Pair Effect")) %>%
+  rename(settingorig = setting) %>%
+  mutate(setting = paste(paireff, n, tau_type, sep = "\n"))
+
+save(alldat,file = "temp/simresultdat.Rdata")
+```
+
+# Simulations Main Text
+
+```{r}
+load("temp/simresultdat.Rdata")
+```
+
+```{r}
+nocov.main = c("horvitz-thompson","hajek", "fixed-effects","imai", "ploop MI")
+adjn.main = c("wls n", "fixed-effects n", "ploop n")
+adjcovn.main = c("wls (n,x)","fixed-effects (n,x)", "ploop (n,x)")
+
+nocov.labs <- c("IDPD[0, ]","WLS[ ]","WLS-P[ ]", "IDPD[LOI MI, ]","IDPD[LOO MI, ]")
+adjn.labs = c("WLS[n]","WLS-P[n]","IDPD[LOO WLS, n]")
+adjcovn.labs = c("WLS[(n,x)]","WLS-P[(n,x)]", "IDPD[LOO WLS, (n,x)]")
+
+
+est.names.main <- c(nocov.main, adjn.main, adjcovn.main)
+est.labs.main <- c(nocov.labs, adjn.labs,  adjcovn.labs)
+
+settings.main = unique(alldat$setting)[c(1,5,7,8)]
+```
+
+### MSE
+
+```{r}
+msese <- alldat %>%
+  filter(est == "tau" & method %in% est.names.main) %>%
+  filter(setting %in% settings.main) %>%
+  mutate(comp_mse = case_when(method == "hajek" ~ mse,
+                              TRUE ~ NA_real_)) %>%
+  group_by(datframe, setting, n, paireff, tau_type, size) %>%
+  mutate(comp_mse = mean(comp_mse, na.rm = T)) %>%
+  group_by(method, setting, n, paireff, tau_type, size) %>%
+  summarize(mse_rat = mean(mse/comp_mse, na.rm = T),
+            mse_rat_se = sd(mse/comp_mse, na.rm = T)/sqrt(400),
+            bias2_rat = mean(bias^2/comp_mse, na.rm = T),
+            var_rat =  mean(v/comp_mse, na.rm = T),
+            mse_se = sd(mse, na.rm = T)/sqrt(400), mse = mean(mse, na.rm = T),
+            bias2 = mean(bias^2, na.rm = T), var = mean(v, na.rm = T)) %>%
+  mutate(upe_mse = mse + 2*mse_se, le_mse = mse - 2*mse_se,
+         upe_rat = mse_rat + 2*mse_rat_se, le_rat = mse_rat - 2*mse_rat_se) %>%
+  mutate(size = paste0("M = ", size)) %>%
+  mutate(method = factor(method, levels = est.names.main, labels = est.labs.main)) %>%
+  mutate(adj = case_when(method %in% nocov.labs ~ "Baseline",
+                              method %in% adjn.labs ~ "n",
+                              method %in% adjcovn.labs ~ "(n,x)")) %>%
+  mutate(adj = factor(adj, levels = c("Baseline", "n", "(n,x)"))) %>%
+  ungroup() %>%
+  mutate(biased = (bias2/mse) > .05 )
+  
+plot.dat <- msese %>%
+    ungroup() %>%
+    select(method, adj, setting, paireff, size, var, bias2) %>%
+    pivot_longer(var:bias2, names_to = "component",
+                 values_to = "value") 
+
+plot.dat.rat <- msese %>%
+    ungroup() %>%
+    select(method, adj, setting, paireff, size, var_rat, bias2_rat) %>%
+    pivot_longer(var_rat:bias2_rat, names_to = "component",
+                 values_to = "value") 
+
+cols <- c("#1F78B4","#FDBF6F")
+```
+#### Ratio
+
+
+```{r, msefigcompare-rat}
+g <- ggplot() +
+  geom_bar(position="stack", stat="identity", data = plot.dat.rat %>% filter(size == "M = 20"),
+           aes(fill = component, y = value, x = fct_rev(method) ), width = .9) +
+  geom_errorbar(data = msese %>% filter(size == "M = 20"), 
+                aes(x = fct_rev(method), ymin = le_rat, ymax = upe_rat), linewidth = .25) +
+  ylab("") + xlab("") +
+  geom_hline(yintercept = 1, linewidth = .4, linetype="dotted") +
+   scale_fill_manual(name="Ratio of MSE to WLS[ ] Estimator with", values= cols, breaks = c("var_rat","bias2_rat"), labels =c("Variance and", "Squared Bias Components"))+
+  facet_grid(adj ~ setting, scales = "free_y", space = "free_y") +
+  scale_y_continuous(limits = c(0, 1.35), breaks = seq(0, 1.25, by = .25)) +
+  coord_flip() +
+  ggtitle("M = 20") +
+  theme(text = element_text(family = "sans",
+                            size = 10),
+        panel.border = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle=45, size = 8, hjust =1, color = "grey40"),
+        axis.text.y = element_text(size = 10, color = "black"),
+        axis.title.y = element_blank(),
+        axis.title.x = element_blank(),
+        legend.text = element_text(size = 10),
+        legend.position = "bottom",
+        strip.text = element_text(size = 11))
+g
+```
+
+```{r}
+png(paste0("../figures/mse-maintext-rat.png"), width = 8, height = 4.5, units = 'in', res = 300)
+  print(g)
+dev.off()
+```
+```{r, msefigcompare-rat}
+g <- ggplot() +
+  geom_bar(position="stack", stat="identity", data = plot.dat.rat %>% filter(size == "M = 200"),
+           aes(fill = component, y = value, x = fct_rev(method) ), width = .9) +
+  geom_errorbar(data = msese %>% filter(size == "M = 200"), 
+                aes(x = fct_rev(method), ymin = le_rat, ymax = upe_rat), linewidth = .25) +
+  ylab("") + xlab("") +
+  geom_hline(yintercept = 1, linewidth = .4, linetype="dotted") +
+   scale_fill_manual(name="Ratio of MSE to WLS[ ] Estimator with", values= cols, breaks = c("var_rat","bias2_rat"), labels =c("Variance and", "Squared Bias Components"))+
+  facet_grid(adj ~ setting, scales = "free_y", space = "free_y") +
+  scale_y_continuous(limits = c(0, 1.35), breaks = seq(0, 1.25, by = .25)) +
+  coord_flip() +
+  ggtitle("M = 200") +
+  theme(text = element_text(family = "sans",
+                            size = 10),
+        panel.border = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle=45, size = 8, hjust =1, color = "grey40"),
+        axis.text.y = element_text(size = 10, color = "black"),
+        axis.title.y = element_blank(),
+        axis.title.x = element_blank(),
+        legend.text = element_text(size = 10),
+        legend.position = "bottom",
+        strip.text = element_text(size = 11))
+g
+```
+
+```{r}
+png(paste0("../figures/mse-maintext-m200-rat.png"), width = 8, height = 4.5, units = 'in', res = 300)
+  print(g)
+dev.off()
+```
+
+### Variance and coverage
+
+```{r}
+dat.vartrue <- alldat %>%
+      filter(est == "tau") %>%
+      select(datframe, method, setting, size, est_true_var = v)
+
+vardat <- alldat %>%
+  filter(est == "var") %>%
+  select(datframe, method, est_type, setting, size, est_e_nom = e) %>%
+  left_join(dat.vartrue, by = c("datframe","method","setting","size")) %>%
+  ungroup() %>%
+  mutate(rel_bias = est_e_nom/est_true_var) 
+
+vardatsum <- vardat %>%
+  group_by(method, est_type, setting, size) %>%
+  summarize(mean_rel_bias = mean(rel_bias, na.rm = T), 
+            se_rel_bias = sd(rel_bias, na.rm = T)/sqrt(400),
+         l_rel = quantile(rel_bias, prob = .05, na.rm = T),
+         u_rel = quantile(rel_bias, prob = .95, na.rm = T))
+
+tabdat <- alldat %>%
+  filter(est == "covg") %>%
+  ungroup() %>%
+  group_by(method, est_type, setting, size) %>%
+  summarize(e_covg = mean(e, na.rm = T), 
+            se_covg = sd(e, na.rm = T)/sqrt(400),
+         l_covg = quantile(e, prob = .05, na.rm = T),
+         u_covg = quantile(e, prob = .95, na.rm = T)) %>%
+  right_join(vardatsum, by = c("method","est_type","setting","size")) %>%
+  ungroup() 
+
+save(tabdat, file = "temp/varresultdat.Rdata")
+```
+
+
+```{r}
+nocov.main = c("horvitz-thompson","hajek", "fixed-effects","imai", "ploop MI")
+adjn.main = c("wls n", "fixed-effects n", "ploop n")
+adjcovn.main = c("wls (n,x)","fixed-effects (n,x)", "ploop (n,x)")
+
+nocov.labsv <- c("IDPD[0, $\\emptyset$]","WLS[$\\emptyset$]","WLS-P[$\\emptyset$]", "IDPD[LOI MI, $\\emptyset$]","IDPD[LOO MI, $\\emptyset$]")
+adjn.labsv = c("WLS[n]","WLS-P[n]","IDPD[LOO WLS, n]")
+adjcovn.labsv = c("WLS[(n,x)]","WLS-P[(n,x)]", "IDPD[LOO WLS, (n,x)]")
+
+est.labs.main.var <- c(nocov.labsv, adjn.labsv,  adjcovn.labsv)
+
+
+varlevs.main <- c("cr","robust","ikn","loop","ma")
+varlabs.main <- c("Design (\\ref{eq:crhjvar})","H-W Robust", "Design (\\ref{eq:vikn})", "Design (\\ref{eq:vloop})", "Design (\\ref{eq:mavar})")
+```
+
+```{r}
+levs <- settings.main
+labss <- c("1","2","3","4")
+
+tabform <- tabdat %>%
+  filter(method %in% est.names.main & setting %in% settings.main) %>%
+  mutate(keep = case_when(method == "hajek" & est_type== "cr" ~ 1,
+                          (method == "horvitz-thompson" | str_detect(method, "des")) & est_type == "ma" ~ 1,
+                          method == "imai" & est_type == "ikn" ~ 1,
+                          str_detect(method,"fixed|wls") & est_type == "robust" ~ 1,
+                          str_detect(method, "ploop") & est_type == "loop" ~ 1,
+                          TRUE ~ 0)) %>%
+  filter(keep == 1) %>%
+  mutate(setting = factor(setting, levels=levs, labels = labss),
+         method = factor(method, levels = est.names.main, labels = est.labs.main.var),
+         var_type = factor(est_type, levels = varlevs.main, labels = varlabs.main)) %>%
+  mutate(adj = case_when(method %in% nocov.labsv ~ "Baseline",
+                              method %in% adjn.labs ~ "n",
+                              method %in% adjcovn.labs ~ "(n,x)")) %>%
+  mutate(adj = factor(adj, levels = c("Baseline", "n", "x", "(n,x)"))) %>%
+  select(method, var_type, adj, size, setting, covg = e_covg, rel_bias = mean_rel_bias, se_rel_bias, se_covg) %>%
+  pivot_wider(names_from = setting, values_from = covg:se_covg,
+              names_glue = "{.value}_{setting}")
+```
+
+```{r}
+vartab <- tabform %>%
+  filter(size == 20) %>%
+  arrange(method) %>%
+  select(method, var_type, starts_with("rel_bias"))
+  
+
+covgtab <- tabform %>%
+  filter(size == 20) %>%
+  arrange(method) %>%
+  select(method, var_type, starts_with("covg"))
+```
+
+standard errors of relative bias for caption
+```{r}
+tabform %>%
+  filter(size == 20) %>%
+  select(method, var_type, starts_with("se_rel")) %>%
+  pivot_longer(starts_with("se"), names_prefix = "se_rel_bias",
+               values_to = "se_rel_bias",
+               names_to = "setting") %>%
+  mutate(flag = se_rel_bias > .005) %>%
+  group_by(flag) %>%
+  summarize(across(se_rel_bias, list(max = max, min = min, mean = mean)))
+```
+```{r}
+tabform %>%
+  filter(size == 20) %>%
+  select(method, var_type, starts_with("se_covg"))
+
+```
+
+```{r}
+kable(vartab, booktabs = T, digits = 2, col.names = c("Point", "Variance", "Treat Const", "Treat Const","Treat Const", "Treat Corr Size"),
+            escape = FALSE, align = "llcccc") %>% 
+  kable_styling(latex_options = "hold_position") %>%
+  row_spec(row = 0, align = "c") %>%
+  #column_spec(column = 1, bold = T) %>%
+  pack_rows("Baseline", 1,5) %>%
+  pack_rows("Cluster Size", 6,8) %>%
+  pack_rows("Covariate and Cluster Size", 9,11) %>%
+  add_header_above(c("Estimator" = 2, "Matched Size" = 1, "Matched Size" = 1,"Varied Size" = 1, "Varied Size" = 1), line = F) %>%
+  add_header_above(c(" " = 2, "No Pair Effect" = 1, "Pair Effect" = 1,"Pair Effect" = 1,"Pair Effect" = 1), line = F) %>%
+  #add_header_above(c(" " = 1, "Const Treat" = 1,"Const Treat" = 1,"Const Treat" = 1, "Size Treat" = 1), line = F) %>%
+  add_header_above(c(" " = 2, "Setting 1" = 1, "Setting 2" = 1, "Setting 3" = 1, "Setting 4" = 1), line = F, bold = T) %>%
+  add_header_above(c(" " = 2, "Relative Bias of Variance Estimators" =4), bold = T)
+```
+
+```{r}
+df <- kable(vartab, booktabs = T, digits = 2, 
+            col.names = c("Point Estimator", "Variance Est.", "Treat Const", "Treat Const","Treat Const", "Treat Corr Size"),
+            escape = FALSE, align = "llcccc", format = "latex") %>% 
+  kable_styling(latex_options = c("hold_position","scale_down")) %>%
+  row_spec(row = 0, align = "c") %>%
+  #column_spec(column = 1, bold = T) %>%
+  pack_rows("Baseline", 1,5) %>%
+  pack_rows("Cluster Size", 6,8) %>%
+  pack_rows("Covariate and Cluster Size", 9,11) %>%
+ add_header_above(c(" " = 2, "Matched Size" = 1, "Matched Size" = 1,"Varied Size" = 1, "Varied Size" = 1), line = F) %>%
+  add_header_above(c(" " = 2, "No Pair Effect" = 1, "Pair Effect" = 1,"Pair Effect" = 1,"Pair Effect" = 1), line = F) %>%
+  add_header_above(c(" " = 2, "Setting 1" = 1, "Setting 2" = 1, "Setting 3" = 1, "Setting 4" = 1), line = F, bold = T) %>%
+  add_header_above(c(" " = 2, "Relative Bias of Variance Estimators" =4), bold = T)
+
+# do some funky manual things to save the .tex file as desired for input into the paper
+write_lines(df, '../figures/var_main.tex')
+out <- read_lines('../figures/var_main.tex')
+out <- str_replace(out, "Point Estimator", "\\\\textbf{Point Estimator}")
+out <- str_replace(out, "\\{Variance Est.", "{\\\\textbf{Variance Est.}")
+write_lines(out[-c(1, length(out))], '../figures/var_main.tex')
+```
+
+
+```{r}
+df <- kable(covgtab, booktabs = T, digits = 2, 
+            col.names = c("Point Estimator", "Variance Est.", "Treat Const", "Treat Const","Treat Const", "Treat Corr Size"),
+            escape = FALSE, align = "llcccc", format = "latex") %>% 
+  kable_styling(latex_options = c("hold_position","scale_down")) %>%
+  row_spec(row = 0, align = "c") %>%
+  #column_spec(column = 1, bold = T) %>%
+  pack_rows("Baseline", 1,5) %>%
+  pack_rows("Cluster Size", 6,8) %>%
+  pack_rows("Covariate and Cluster Size", 9,11) %>%
+ add_header_above(c(" " = 2, "Matched Size" = 1, "Matched Size" = 1,"Varied Size" = 1, "Varied Size" = 1), line = F) %>%
+  add_header_above(c(" " = 2, "No Pair Effect" = 1, "Pair Effect" = 1,"Pair Effect" = 1,"Pair Effect" = 1), line = F) %>%
+  add_header_above(c(" " = 2, "Setting 1" = 1, "Setting 2" = 1, "Setting 3" = 1, "Setting 4" = 1), line = F, bold = T) %>%
+  add_header_above(c(" " = 2, "Coverage Probability with Variance Estimators" =4), bold = T)
+
+# do some funky manual things to save the .tex file as desired for input into the paper
+write_lines(df, '../figures/covg_main.tex')
+out <- read_lines('../figures/covg_main.tex')
+out <- str_replace(out, "Point Estimator", "\\\\textbf{Point Estimator}")
+out <- str_replace(out, "\\{Variance Est.", "{\\\\textbf{Variance Est.}")
+write_lines(out[-c(1, length(out))], '../figures/covg_main.tex')
+```
+
+# Simulation Appendix
+
+### Appendix labels
+```{r}
+nocov.apx = c("horvitz-thompson", "hajek", "fixed-effects","random-effects", "imai", "ploop MI")
+adjn.apx = c("wls n", "fixed-effects n", "random-effects n", "su-ding n", "des raj n", "ploop n")
+adjcovn.apx = c("wls (n,x)","fixed-effects (n,x)", "random-effects (n,x)", "su-ding (n,x)", "des raj (n,x)", "ploop (n,x)")
+
+nocov.labs <- c("IDPD[0, ]","WLS[ ]","WLS-P[ ]","WLS-R[ ]", "IDPD[LOI MI, ]","IDPD[LOO MI, ]")
+adjn.labs = c("WLS[n]","WLS-P[n]","WLS-R[n]","WLS-HT[n]", "IDPD[LOO DR, n]", "IDPD[LOO WLS, n]")
+adjcovn.labs = c("WLS[(n,x)]","WLS-P[(n,x)]","WLS-R[(n,x)]","WLS-HT[(n,x)]", "IDPD[LOO DR, (n,x)]", "IDPD[LOO WLS, (n,x)]")
+
+
+nocov.labsv.apx <- c("IDPD[0, $\\emptyset$]","WLS[$\\emptyset$]","WLS-P[$\\emptyset$]","WLS-R[$\\emptyset$]", "IDPD[LOI MI, $\\emptyset$]","IDPD[LOO MI, $\\emptyset$]")
+
+est.names.apx <- c(nocov.apx, adjn.apx, adjcovn.apx)
+est.labs.apx <- c(nocov.labs, adjn.labs, adjcovn.labs)
+
+est.labs.apx.var <- c(nocov.labsv.apx, adjn.labs,  adjcovn.labs)
+
+varlevs.apx <- c("robust", "reg", "cr","ikn","loop","ma", "spmk")
+varlabs.apx <- c("H-W Robust", "Regression", "Design (\\ref{eq:crhjvar})", "Design (\\ref{eq:vikn})", "Design (\\ref{eq:vloop})", "Design (\\ref{eq:mavar})", "Design (\\ref{eq:vspmk})")
+```
+
+## No effect of cluster size
+### MSE
+
+```{r}
+load("temp/simresultdat.Rdata")
+
+```
+
+```{r}
+msese <- alldat %>%
+  filter(est == "tau" & method %in% est.names.apx) %>%
+   mutate(comp_mse = case_when(method == "hajek" ~ mse,
+                              TRUE ~ NA_real_)) %>%
+  group_by(datframe, setting, n, paireff, tau_type, size) %>%
+  mutate(comp_mse = mean(comp_mse, na.rm = T)) %>%
+  group_by(method, setting, n, paireff, tau_type, size) %>%
+  summarize(mse_rat = mean(mse/comp_mse, na.rm = T),
+            mse_rat_se = sd(mse/comp_mse, na.rm = T)/sqrt(400),
+            bias2_rat = mean(bias^2/comp_mse, na.rm = T),
+            var_rat =  mean(v/comp_mse, na.rm = T),
+            mse_se = sd(mse, na.rm = T)/sqrt(400), mse = mean(mse, na.rm = T),
+            bias2 = mean(bias^2, na.rm = T), var = mean(v, na.rm = T)) %>%
+  mutate(upe_mse = mse + 2*mse_se, le_mse = mse - 2*mse_se,
+         upe_rat = mse_rat + 2*mse_rat_se, le_rat = mse_rat - 2*mse_rat_se) %>%
+  mutate(size = paste0("M = ", size)) %>%
+  mutate(adj = case_when(method %in% nocov.apx ~ "Baseline",
+                              method %in% adjn.apx ~ "n",
+                              method %in% adjcovn.apx ~ "(n,x)")) %>%
+  mutate(adj = factor(adj, levels = c("Baseline", "n", "(n,x)"))) %>%
+  ungroup() %>%
+  mutate(method = factor(method, levels = est.names.apx, labels = est.labs.apx)) %>%
+  mutate(biased = (bias2/mse) > .05 )
+ 
+
+plot.dat.rat <- msese %>%
+    ungroup() %>%
+    select(method, adj, setting, paireff, size, var_rat, bias2_rat) %>%
+    pivot_longer(var_rat:bias2_rat, names_to = "component",
+                 values_to = "value") 
+
+cols <- c("#1F78B4","#FDBF6F")
+```
+
+```{r, msefigcompare}
+for(p in c("Pair Effect", "No Pair Effect")) {
+  for(s in c("M = 20", "M = 200")){
+   g <- ggplot() +
+  geom_bar(position="stack", stat="identity", data = plot.dat.rat %>% filter(size == s & paireff == p),
+           aes(fill = component, y = value, x = fct_rev(method)), width = .9) +
+  geom_errorbar(data = msese %>% filter(size == s & paireff == p), 
+                aes(x = fct_rev(method), ymin = le_rat, ymax = upe_rat), linewidth = .25) +
+  ylab("") + xlab("") +
+  geom_hline(yintercept = 1, linewidth = .4, linetype="dotted") +
+   scale_fill_manual(name="Ratio of MSE to WLS[ ] Estimator with", values= cols, breaks = c("var_rat","bias2_rat"), labels =c("Variance and", "Squared Bias Components"))+
+  facet_grid(adj ~ setting, scales = "free_y", space = "free_y") +
+  scale_y_continuous(limits = c(0, 1.35), breaks = seq(0, 1.25, by = .25)) +
+  coord_flip() +
+  theme(text = element_text(family = "sans",
+                            size = 10),
+        panel.border = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle=45, size = 8, hjust =1, color = "grey40"),
+        axis.text.y = element_text(size = 10, color = "black"),
+        axis.title.y = element_blank(),
+        axis.title.x = element_blank(),
+        legend.text = element_text(size = 10),
+        legend.position = "bottom",
+        strip.text = element_text(size = 11))
+  
+  png(paste0(paste0("../figures/mse-appendix-", str_replace_all(str_to_lower(p),"\\s",""),"-", str_replace_all(str_to_lower(s),"\\s",""), ".png")), width = 8, height = 5, units = 'in', res = 300)
+    print(g)
+  dev.off()
+  
+  }
+}
+
+
+```
+
+### Variance and Coverage
+```{r}
+load("temp/varresultdat.Rdata")
+```
+
+```{r}
+tabform <- tabdat %>%
+  select(method, size, setting, est_type, covg = e_covg, se_covg, rel_bias = mean_rel_bias, se_rel_bias) %>%
+  mutate(rel_bias = sprintf("%1.2f (%1.3f)", rel_bias, se_rel_bias),
+         covg = sprintf("%1.3f", covg)) %>%
+  select(-se_covg, -se_rel_bias) %>%
+  pivot_longer(covg:rel_bias, names_to = "meas", values_to = "val") %>%
+  mutate(setting = str_replace_all(str_replace_all(setting, "\n","_"),"\\s","_")) %>%
+  filter(method %in% est.names.apx) %>%
+  mutate(adj = case_when(method %in% nocov.apx ~ "Baseline",
+                              method %in% adjn.apx ~ "n",
+                              method %in% adjcovn.apx ~ "(n,x)")) %>%
+  mutate(adj = factor(adj, levels = c("Baseline", "n", "x", "(n,x)"))) %>%
+  mutate(drop = case_when(est_type == "loop" & method == "horvitz-thompson" ~ 1,
+                          str_detect(method, "random") ~ 0,
+                          est_type == "reg" & str_detect(method, "n") ~ 1,
+                          TRUE ~ 0
+                          )) %>%
+  filter(drop == 0) %>%
+  mutate(method = factor(method, levels = est.names.apx, labels = est.labs.apx.var)) %>%
+  pivot_wider(names_from = setting, values_from = val) %>%
+  mutate(est_type = factor(est_type, levels = varlevs.apx, labels = varlabs.apx)) %>%
+  arrange(adj, method, est_type)
+  
+
+tabform <- tabform %>%
+  select(size, adj, method, est_type, meas, everything())
+```
+
+
+```{r}
+for(m in c("covg", "rel_bias")){
+  for(s in c(20,200)){
+    for(p in c("Pair Effect", "No Pair Effect")){
+      
+      if(p=="No Pair Effect"){
+          collab = "No_Pair_Effect"
+        }else{
+          collab = "Pair_Effect"
+        }
+      
+      if(m == "rel_bias") headlab = c("Relative Bias of Variance Estimators"=6)
+      if(m == "covg") headlab = c("Coverage Probability with Variance Estimators"=6)
+      
+      mlab <- c(6)
+      names(mlab) <- paste0("M = ", s)
+      
+      plab <- c(2,4)
+      names(plab) <- c(" ", p)
+      
+      
+      df <- tabform %>%
+              filter(meas == m & size == s) %>%
+              select(method, est_type, starts_with(collab))  %>%
+              kable(booktabs = T, format = "latex",  col.names = c("Method", "Var Estimator", "Tr Const", 
+                                            "Tr Cor. Size", "Tr Const", "Tr Cor. Size"),
+                    escape = FALSE, align = "llcccc") %>% 
+              kable_styling(latex_options = c("hold_position","scale_down", "striped"),
+                            stripe_index = c(1:2, 6:10, 12:14, 16, 19, 21, 23, 26, 28)) %>%
+              row_spec(row = 0, align = "c", bold=T) %>%
+              pack_rows("Baseline", 1, 15) %>%
+              pack_rows("Cluster Size", 16, 22) %>%
+              pack_rows("Covariate and Cluster Size", 23, 29) %>%
+              add_header_above(c(" " = 2, "Matched Size" = 2,"Varied Size" = 2), line = F, bold = T) %>%
+              add_header_above(c(" " = 2, "Pair Effect" =4), bold = T, line = F) %>%
+              add_header_above(mlab, bold = T) %>%
+              add_header_above(headlab, bold = T, line = F) 
+      
+      file.name <- paste(m, s, str_to_lower(str_replace_all(p,"\\s","")), "apx.tex",sep="-")
+      
+      # do some funky manual things to save the .tex file as desired for input into the paper
+      write_lines(df, paste0('../figures/', file.name))
+      out <- read_lines( paste0('../figures/', file.name))
+      out <- str_replace(out, "Method", "\\\\textbf{Method}")
+      write_lines(out[-c(1, length(out))],  paste0('../figures/', file.name))
+      
+    }
+  }
+}
+ 
+```
+
+
+```{r}
+
+m = "rel_bias"
+s = 200
+p = "Pair Effect"
+
+if(p=="No Pair Effect"){
+          collab = "No_Pair_Effect"
+        }else{
+          collab = "Pair_Effect"
+        }
+      
+      if(m == "rel_bias") headlab = c("Relative Bias of Variance Estimators"=6)
+      if(m == "covg") headlab = c("Coverage Probability with Variance Estimators"=6)
+      
+      mlab <- c(6)
+      names(mlab) <- paste0("M = ", s)
+      
+      plab <- c(2,4)
+      names(plab) <- c(" ", p)
+
+ tabform %>%
+              filter(meas == m & size == s) %>%
+              select(method, est_type, starts_with(collab))  %>%
+              kable(booktabs = T, col.names = c("Method", "Var Estimator", "Tr Const", 
+                                            "Tr Cor. Size", "Tr Const", "Tr Cor. Size"),
+                    escape = FALSE, align = "llcccc") %>% 
+              kable_styling(latex_options = c("hold_position","scale_down")) %>%
+              row_spec(row = 0, align = "c", bold=T) %>%
+              kable_styling(latex_options = c("hold_position","scale_down", "striped"),
+                            stripe_index = c(1:2, 6:10, 12:14, 17:18, 20, 24:25, 27)) %>%
+              row_spec(row = 0, align = "c", bold=T) %>%
+              pack_rows("Baseline", 1, 15) %>%
+              pack_rows("Cluster Size", 16, 22) %>%
+              pack_rows("Covariate and Cluster Size", 23, 29) %>%
+              add_header_above(c(" " = 2, "Matched Size" = 2,"Varied Size" = 2), line = F, bold = T) %>%
+              add_header_above(c(" " = 2, "Pair Effect" =4), bold = T, line = F) %>%
+              add_header_above(mlab, bold = T) %>%
+              add_header_above(headlab, bold = T, line = F) 
+
+
+```
+
+
+
+
+## N effect on outcomes
+
+```{r}
+sumdat = foreach(x = labels, .combine = rbind) %do% {
+  load(paste0("temp/sims_m20_n150_neff/simout-", x, "-covout.Rdata"))
+  
+   temp = results.sum %>%
+    mutate(setting = x, size = 20)
+   
+  load(paste0("temp/sims_m200_n150_neff/simout-", x, "-covout.Rdata"))
+  
+   dat = results.sum %>%
+    mutate(setting = x, size = 200) %>%
+    rbind(temp)
+   
+}
+
+alldat =  foreach(x = labels, .combine = rbind) %do% {
+  load(paste0("temp/sims_m20_n150_neff/simout-", x, "-covout.Rdata"))
+  
+  temp = dat.gen.results %>%
+    mutate(setting = x, size = 20,
+            datframe = paste0("dat", rep(1:400, each = 104)))
+  
+   load(paste0("temp/sims_m200_n150_neff/simout-", x, "-covout.Rdata"))
+  
+   dat = dat.gen.results %>%
+    mutate(setting = x, size = 200,
+            datframe = paste0("dat", rep(1:400, each = 104))) %>%
+    rbind(temp)
+   
+}
+
+```
+
+
+give clean names to settings
+```{r}
+alldat <- alldat %>%
+  mutate(n = case_when(str_detect(setting, "n_pair_unif") ~ "Matched Size",
+                       TRUE ~ "Varied Size"),
+         tau_type = case_when(str_detect(setting,"tau_const") ~ "Treat Const",
+                              TRUE ~ "Treat Corr Size"),
+         paireff = case_when(str_detect(setting, "=1") ~ "Pair Effect",
+                             TRUE ~ "No Pair Effect")) %>%
+  rename(settingorig = setting) %>%
+  mutate(setting = paste(paireff, n, tau_type, sep = "\n"))
+
+save(alldat,file = "temp/simresultdat_neff.Rdata")
+```
+
+
+```{r}
+dat.vartrue <- alldat %>%
+      filter(est == "tau") %>%
+      select(datframe, method, setting, size, est_true_var = v)
+
+vardat <- alldat %>%
+  filter(est == "var") %>%
+  select(datframe, method, est_type, setting, size, est_e_nom = e) %>%
+  left_join(dat.vartrue, by = c("datframe","method","setting","size")) %>%
+  ungroup() %>%
+  mutate(rel_bias = est_e_nom/est_true_var) 
+
+vardatsum <- vardat %>%
+  group_by(method, est_type, setting, size) %>%
+  summarize(mean_rel_bias = mean(rel_bias, na.rm = T), 
+            se_rel_bias = sd(rel_bias, na.rm = T)/sqrt(400),
+         l_rel = quantile(rel_bias, prob = .05, na.rm = T),
+         u_rel = quantile(rel_bias, prob = .95, na.rm = T))
+
+tabdat <- alldat %>%
+  filter(est == "covg") %>%
+  ungroup() %>%
+  group_by(method, est_type, setting, size) %>%
+  summarize(e_covg = mean(e, na.rm = T), 
+            se_covg = sd(e, na.rm = T)/sqrt(400),
+         l_covg = quantile(e, prob = .05, na.rm = T),
+         u_covg = quantile(e, prob = .95, na.rm = T)) %>%
+  right_join(vardatsum, by = c("method","est_type","setting","size")) %>%
+  ungroup() 
+
+save(tabdat, file = "temp/varresultdat_neff.Rdata")
+```
+
+### MSE
+
+
+```{r}
+load("temp/simresultdat_neff.Rdata")
+
+msese <- alldat %>%
+  filter(est == "tau" & method %in% est.names.apx) %>%
+   mutate(comp_mse = case_when(method == "hajek" ~ mse,
+                              TRUE ~ NA_real_)) %>%
+  group_by(datframe, setting, n, paireff, tau_type, size) %>%
+  mutate(comp_mse = mean(comp_mse, na.rm = T)) %>%
+  group_by(method, setting, n, paireff, tau_type, size) %>%
+  summarize(mse_rat = mean(mse/comp_mse, na.rm = T),
+            mse_rat_se = sd(mse/comp_mse, na.rm = T)/sqrt(400),
+            bias2_rat = mean(bias^2/comp_mse, na.rm = T),
+            var_rat =  mean(v/comp_mse, na.rm = T),
+            mse_se = sd(mse, na.rm = T)/sqrt(400), mse = mean(mse, na.rm = T),
+            bias2 = mean(bias^2, na.rm = T), var = mean(v, na.rm = T)) %>%
+  mutate(upe_mse = mse + 2*mse_se, le_mse = mse - 2*mse_se,
+         upe_rat = mse_rat + 2*mse_rat_se, le_rat = mse_rat - 2*mse_rat_se) %>%
+  mutate(size = paste0("M = ", size)) %>%
+  mutate(adj = case_when(method %in% nocov.apx ~ "Baseline",
+                              method %in% adjn.apx ~ "n",
+                              method %in% adjcovn.apx ~ "(n,x)")) %>%
+  mutate(adj = factor(adj, levels = c("Baseline", "n", "(n,x)"))) %>%
+  ungroup() %>%
+  mutate(method = factor(method, levels = est.names.apx, labels = est.labs.apx)) %>%
+  mutate(biased = (bias2/mse) > .05 )
+ 
+
+plot.dat.rat <- msese %>%
+    ungroup() %>%
+    select(method, adj, setting, paireff, size, var_rat, bias2_rat) %>%
+    pivot_longer(var_rat:bias2_rat, names_to = "component",
+                 values_to = "value") 
+
+cols <- c("#1F78B4","#FDBF6F")
+```
+
+```{r, msefigcompare}
+for(p in c("Pair Effect", "No Pair Effect")) {
+  for(s in c("M = 20", "M = 200")){
+    
+    htlim =1.5
+    if(p == "Pair Effect") htlim = 2
+    
+   g <- ggplot() +
+  geom_bar(position="stack", stat="identity", data = plot.dat.rat %>% filter(size == s & paireff == p),
+           aes(fill = component, y = value, x = fct_rev(method)), width = .9) +
+  geom_errorbar(data = msese %>% filter(size == s & paireff == p), 
+                aes(x = fct_rev(method), ymin = le_rat, ymax = upe_rat), linewidth = .25) +
+  ylab("") + xlab("") +
+  geom_hline(yintercept = 1, linewidth = .4, linetype="dotted") +
+   scale_fill_manual(name="Ratio of MSE to WLS[ ] Estimator with", values= cols, breaks = c("var_rat","bias2_rat"), labels =c("Variance and", "Squared Bias Components"))+
+  facet_grid(adj ~ setting, scales = "free_y", space = "free_y") +
+  scale_y_continuous(limits = c(0, htlim), breaks = seq(0, htlim, by = .25)) +
+  coord_flip() +
+  theme(text = element_text(family = "sans",
+                            size = 10),
+        panel.border = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle=45, size = 8, hjust =1, color = "grey40"),
+        axis.text.y = element_text(size = 10, color = "black"),
+        axis.title.y = element_blank(),
+        axis.title.x = element_blank(),
+        legend.text = element_text(size = 10),
+        legend.position = "bottom",
+        strip.text = element_text(size = 11))
+  
+  png(paste0(paste0("../figures/mse-appendix-neff-", str_replace_all(str_to_lower(p),"\\s",""),"-", str_replace_all(str_to_lower(s),"\\s",""), ".png")), width = 8, height = 5, units = 'in', res = 300)
+    print(g)
+  dev.off()
+  
+  }
+}
+
+
+```
+
+### Variance and Coverage
+```{r}
+load("temp/varresultdat_neff.Rdata")
+```
+
+```{r}
+tabform <- tabdat %>%
+  select(method, size, setting, est_type, covg = e_covg, se_covg, rel_bias = mean_rel_bias, se_rel_bias) %>%
+  mutate(rel_bias = sprintf("%1.2f (%1.3f)", rel_bias, se_rel_bias),
+         covg = sprintf("%1.3f", covg)) %>%
+  select(-se_covg, -se_rel_bias) %>%
+  pivot_longer(covg:rel_bias, names_to = "meas", values_to = "val") %>%
+  mutate(setting = str_replace_all(str_replace_all(setting, "\n","_"),"\\s","_")) %>%
+  filter(method %in% est.names.apx) %>%
+  mutate(adj = case_when(method %in% nocov.apx ~ "Baseline",
+                              method %in% adjn.apx ~ "n",
+                              method %in% adjcovn.apx ~ "(n,x)")) %>%
+  mutate(adj = factor(adj, levels = c("Baseline", "n", "x", "(n,x)"))) %>%
+  mutate(drop = case_when(est_type == "loop" & method == "horvitz-thompson" ~ 1,
+                          str_detect(method, "random-effects") ~ 0,
+                          est_type == "reg" & str_detect(method, "n") ~ 1,
+                          TRUE ~ 0
+                          )) %>%
+  filter(drop == 0) %>%
+  mutate(method = factor(method, levels = est.names.apx, labels = est.labs.apx.var)) %>%
+  pivot_wider(names_from = setting, values_from = val) %>%
+  mutate(est_type = factor(est_type, levels = varlevs.apx, labels = varlabs.apx)) %>%
+  arrange(adj, method, est_type)
+  
+
+tabform <- tabform %>%
+  select(size, adj, method, est_type, meas, everything())
+```
+
+
+```{r}
+for(m in c("covg", "rel_bias")){
+  for(s in c(20,200)){
+    for(p in c("Pair Effect", "No Pair Effect")){
+      
+      if(p=="No Pair Effect"){
+          collab = "No_Pair_Effect"
+        }else{
+          collab = "Pair_Effect"
+        }
+      
+      if(m == "rel_bias") headlab = c("Relative Bias of Variance Estimators"=6)
+      if(m == "covg") headlab = c("Coverage Probability with Variance Estimators"=6)
+      
+      mlab <- c(6)
+      names(mlab) <- paste0("M = ", s)
+      
+      plab <- c(2,4)
+      names(plab) <- c(" ", p)
+      
+      
+      df <- tabform %>%
+              filter(meas == m & size == s) %>%
+              select(method, est_type, starts_with(collab))  %>%
+              kable(booktabs = T, format = "latex",  col.names = c("Method", "Var Estimator", "Tr Const", 
+                                            "Tr Cor. Size", "Tr Const", "Tr Cor. Size"),
+                    escape = FALSE, align = "llcccc") %>% 
+              kable_styling(latex_options = c("hold_position","scale_down", "striped"),
+                            stripe_index = c(1:2, 6:10, 14, 16:17, 19, 22:23, 25)) %>%
+              row_spec(row = 0, align = "c", bold=T) %>%
+              pack_rows("Baseline", 1, 14) %>%
+              pack_rows("Cluster Size", 15, 20) %>%
+              pack_rows("Covariate and Cluster Size", 21, 26) %>%
+              add_header_above(c(" " = 2, "Matched Size" = 2,"Varied Size" = 2), line = F, bold = T) %>%
+              add_header_above(c(" " = 2, "Pair Effect" =4), bold = T, line = F) %>%
+              add_header_above(mlab, bold = T) %>%
+              add_header_above(headlab, bold = T, line = F) 
+      
+      file.name <- paste(m, s, str_to_lower(str_replace_all(p,"\\s","")), "neff-apx.tex",sep="-")
+      
+      # do some funky manual things to save the .tex file as desired for input into the paper
+      write_lines(df, paste0('../figures/', file.name))
+      out <- read_lines( paste0('../figures/', file.name))
+      out <- str_replace(out, "Method", "\\\\textbf{Method}")
+      write_lines(out[-c(1, length(out))],  paste0('../figures/', file.name))
+      
+    }
+  }
+}
+ 
+```
+
+
+
+
+
+
+
+# CTA Main Text
+
+## EDA
+```{r}
+load("temp/cta-dat-clean.Rdata")
+```
+
+### Sample Size Balance
+
+```{r}
+g <- ggplot(aes(x= grade_n_0, y = grade_n_1), data = dat.wide) +
+  geom_jitter(width = 5, height = 5) +
+  geom_point(aes(x = mean(grade_n_0), y=mean(grade_n_1)), color = "#1F78B4", shape = 8, size = 3)+
+  geom_abline(slope = 1, intercept = 0, linewidth = .4) +
+  xlab("Number of 8th/9th Grade Students in Control School")+
+  ylab("Number of 8th/9th Grade Students in Treatment School") +
+  xlim(c(0,700))+ylim(c(0,700)) +
+  theme(text = element_text(family = "sans",
+                            size = 10),
+        panel.border = element_blank(),
+        plot.title = element_text(),
+        axis.text.x = element_text(size = 10),
+        axis.text.y = element_text(size = 10),
+        axis.title.y = element_text(size = 10),
+        axis.title.x = element_text(size = 10))
+g
+```
+
+```{r}
+png(paste0("../figures/cta-samp-size.png"), width = 4.5, height = 4, units = 'in', res = 300)
+  print(g)
+dev.off()
+```
+
+### Pre Test Balance
+```{r}
+g <- ggplot(aes(x= pre_0, y = pre_1), data = dat.wide) +
+  geom_jitter(width = 2, height = 2) +
+  geom_point(aes(x = mean(pre_0), y=mean(pre_1)), color = "#1F78B4", shape = 8, size = 3)+
+  geom_abline(slope = 1, intercept = 0, linewidth = .4) +
+  xlab("2007 Math TAKS Passing Rate in Control School")+
+  ylab("2007 Math TAKS Passing Rate in Treatment School") +
+  scale_x_continuous(n.breaks = 6, limits = c(0,100)) +
+  scale_y_continuous(n.breaks = 6, limits = c(0,100)) +
+  theme(text = element_text(family = "sans",
+                            size = 10),
+        panel.border = element_blank(),
+        plot.title = element_text(),
+        axis.text.x = element_text(size = 10),
+        axis.text.y = element_text(size = 10),
+        axis.title.y = element_text(size = 10),
+        axis.title.x = element_text(size = 10))
+g
+```
+
+
+```{r}
+png(paste0("../figures/cta-pre-score.png"), width = 4.5, height = 4, units = 'in', res = 300)
+  print(g)
+dev.off()
+```
+
+## Real Data Simulations
+
+````{r}
+load("temp/cta_plot/plotdat_ri_cta_tau10.Rdata")
+
+mse.res5 <- mse.res %>%
+  mutate(tau = "Constant Effect") 
+var.res5 <- var.res %>%
+  mutate(tau = "const")
+covg.res5 <- covg.res %>%
+  mutate(tau = "const")
+
+load("temp/cta_plot/plotdat_ri_cta_taun.Rdata")
+```
+
+#### MSE
+
+
+```{r}
+adjn.labs = c("WLS[n]","WLS-P[n]",  "IDPD[LOO WLS, n]")
+adjcovn.labs = c("WLS[(n,x)]", "WLS-P[(n,x)]", "IDPD[LOO WLS, (n,x)]","IDPD[LOO RF, (n,x)]")
+
+nocov.figlevs <- c("WLS[ ]","WLS-P[ ]", "IDPD[LOI MI,  ]","IDPD[LOO MI,  ]")
+nocov.figlabs <- c("WLS[ ]","WLS-P[ ]", "IDPD[LOI MI, ]","IDPD[LOO MI, ]")
+
+figlevels = c(nocov.figlevs, adjn.labs, adjcovn.labs)
+figlabs = c(nocov.figlabs, adjn.labs, adjcovn.labs)
+```
+
+```{r}
+mse.res.clean <- mse.res %>%
+  mutate(tau = "Effect Corr w Size") %>%
+  rbind(mse.res5) %>%
+  filter(!str_detect(method, "HT") & !str_detect(method, "DR") & !str_detect(method, "lin") & !str_detect(method, "0")) %>%
+  mutate(method = str_replace(str_replace_all(method, "\\$|\\\\", ""), "emptyset", " ")) %>%
+  mutate(method = factor(method, levels = figlevels, labels = figlabs))
+  
+
+plot.dat <- mse.res.clean %>%
+  mutate(bias2_rat = bias2/comp_mse,
+         var_rat = est_true_var/comp_mse) %>%
+  select(adj, method,tau, bias2_rat, var_rat) %>%
+  pivot_longer(bias2_rat:var_rat, names_to = "component",
+                 values_to = "value") %>%
+  mutate(tau = factor(tau, levels = c("Constant Effect","Effect Corr w Size"))) %>%
+  arrange(adj, method)
+
+cols <- c("#1F78B4","#FDBF6F")
+```
+
+```{r, msefigcompare-rat}
+g <- ggplot() +
+  geom_bar(position="stack", stat="identity", data = plot.dat,
+           aes(fill = component, y = value, x = fct_rev(method)), width = .9) +
+  geom_errorbar(data = mse.res.clean, 
+                aes(x = fct_rev(method), ymin = mse_rat - 2*mc_mse_rat_se, ymax = mse_rat + 2*mc_mse_rat_se),
+                linewidth = .25) +
+  ylab("") + xlab("") +
+  geom_hline(yintercept = 1, linewidth = .4, linetype="dotted") +
+   scale_fill_manual(name="Ratio of MSE to WLS[ ] Estimator with", values= cols, breaks = c("var_rat","bias2_rat"), labels =c("Variance and", "Squared Bias Components"))+
+  facet_grid(adj ~ factor(tau), scales = "free_y", space = "free_y") +
+  scale_y_continuous(limits = c(0, 1.25), breaks = seq(0, 1.25, by = .25)) +
+  coord_flip() +
+  theme(text = element_text(family = "sans",
+                            size = 10),
+        panel.border = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle=45, size = 8, hjust =1, color = "grey40"),
+        axis.text.y = element_text(size = 10, color = "black"),
+        axis.title.y = element_blank(),
+        axis.title.x = element_blank(),
+        legend.text = element_text(size = 10),
+        legend.position = "bottom",
+        strip.text = element_text(size = 11))
+g
+```
+```{r}
+png(paste0("../figures/cta-ri-mse.png"), width = 8, height = 4, units = 'in', res = 300)
+  print(g)
+dev.off()
+```
+
+#### Variance
+```{r}
+varlevs <- c("cr","hc1","ikn","loop","ma")
+varlabs <- c("Design (\\ref{eq:crhjvar})","H-W Robust", "Design (\\ref{eq:vikn})", "Design (\\ref{eq:vloop})", "Design (\\ref{eq:mavar})")
+```
+
+
+```{r}
+covg.dat <- covg.res %>%
+  ungroup() %>%
+  mutate(tau = "corr") %>%
+  rbind(covg.res5) %>%
+  select(tau, adj, method, var_type, e_covg)
+   
+var.tab <- var.res %>%
+  ungroup() %>%
+  mutate(tau = "corr") %>%
+  rbind(var.res5) %>%
+  left_join(covg.dat, by = c("tau", "adj", "method", "var_type")) %>%
+  mutate(drop = case_when(str_detect(method, "HT") | str_detect(method, "DR") | str_detect(method, "lin") ~ 1,
+                          str_detect(method, "0") & var_type  %in% c("hc1", "loop") ~ 1,
+                          !str_detect(method, "WLS-P") & !str_detect(method, "n") & var_type == "hc1" ~ 1,
+                          TRUE ~ 0 )) %>%
+  filter(drop == 0) %>%
+  mutate(rel_bias = sprintf("%1.2f (%1.2f)", e_rel_bias, mc_rel_bias_se)) %>%
+  select(tau,var_type,  method, rel_bias, e_covg) %>%
+  pivot_wider(names_from = tau,
+              values_from = rel_bias:e_covg,
+              names_glue = "{tau}_{.value}") %>%
+  select(method, var_type, starts_with("const"), starts_with("corr")) %>%
+  mutate(var_type = factor(var_type, levels = varlevs, labels = varlabs)) %>%
+  arrange(method)
+```
+
+```{r}
+df <- var.tab %>% 
+  kable(digits = 2, col.names = c("Point", "Variance", "Var Rel Bias" ,"Covg.",
+                                  "Var Rel Bias","Covg."), 
+        align = "llccccc",
+        booktabs = T, format = "latex", escape = FALSE) %>%
+  kable_styling(latex_options = c("hold_position","scale_down")) %>%
+  row_spec(row = 0, align = "c", bold = T) %>%
+  add_header_above(c("Estimator" = 2,  "Constant Effect" =2, "Effect Corr w Size"=2), bold = T) %>%
+  pack_rows("Baseline", 1,5) %>%
+  pack_rows("Cluster Size", 6,8) %>%
+  pack_rows("Cluster Size and Pretest", 9,12)
+
+write_lines(df, '../figures/cta-ri-var.tex')
+out <- read_lines('../figures/cta-ri-var.tex')
+write_lines(out[-c(1, length(out))],  '../figures/cta-ri-var.tex')
+```
+
+```{r}
+var.tab %>% 
+  kable(digits = 2, col.names = c("Point", "Variance", "Var Rel Bias" ,"Covg.",
+                                  "Var Rel Bias","Covg."), 
+        align = "llcccc",
+        booktabs = T, escape = FALSE) %>%
+  kable_styling(latex_options = c("hold_position","scale_down")) %>%
+  row_spec(row = 0, align = "c", bold = T) %>%
+  add_header_above(c("Estimator" = 2,  "Constant Effect" =2, "Effect Corr w Size"=2), bold = T) %>%
+  pack_rows("Baseline", 1,5) %>%
+  pack_rows("Cluster Size", 6,8) %>%
+  pack_rows("Cluster Size and Pretest", 9,12)
+
+```
+
+# CTA Appendix
+
+
+#### MSE
+
+
+```{r}
+adjn.labs = c("WLS[n]","WLS-P[n]", "WLS-HT[n]", "IDPD[LOO DR, n]", "IDPD[LOO WLS, n]")
+adjcovn.labs = c("WLS[(n,x)]", "WLS-P[(n,x)]", "WLS-HT[(n,x)]", "IDPD[LOO DR, (n,x)]", "IDPD[LOO WLS, (n,x)]","IDPD[LOO RF, (n,x)]")
+
+nocov.figlevs <- c("IDPD[0,  ]", "WLS[ ]","WLS-P[ ]", "IDPD[LOI MI,  ]","IDPD[LOO MI,  ]")
+nocov.figlabs <- c("IDPD[0, ]", "WLS[ ]","WLS-P[ ]", "IDPD[LOI MI, ]","IDPD[LOO MI, ]")
+
+figlevels = c(nocov.figlevs, adjn.labs, adjcovn.labs)
+figlabs = c(nocov.figlabs, adjn.labs, adjcovn.labs)
+```
+
+```{r}
+mse.res.clean <- mse.res %>%
+  mutate(tau = "Effect Corr w Size") %>%
+  rbind(mse.res5) %>%
+  mutate(method = str_replace(str_replace_all(method, "\\$|\\\\", ""), "emptyset", " ")) %>%
+  filter(method %in% figlevels) %>%
+  mutate(method = factor(method, levels = figlevels, labels = figlabs))
+  
+
+plot.dat <- mse.res.clean %>%
+  mutate(bias2_rat = bias2/comp_mse,
+         var_rat = est_true_var/comp_mse) %>%
+  select(adj, method,tau, bias2_rat, var_rat) %>%
+  pivot_longer(bias2_rat:var_rat, names_to = "component",
+                 values_to = "value") %>%
+  mutate(tau = factor(tau, levels = c("Constant Effect","Effect Corr w Size"))) %>%
+  arrange(adj, method)
+
+cols <- c("#1F78B4","#FDBF6F")
+```
+
+```{r, cta-apx-mseht}
+g <- ggplot() +
+  geom_bar(position="stack", stat="identity", data = plot.dat,
+           aes(fill = component, y = value, x = fct_rev(method)), width = .9) +
+  geom_errorbar(data = mse.res.clean, 
+                aes(x = fct_rev(method), ymin = mse_rat - 2*mc_mse_rat_se, ymax = mse_rat + 2*mc_mse_rat_se),
+                linewidth = .25) +
+  ylab("") + xlab("") +
+  geom_hline(yintercept = 1, linewidth = .4, linetype="dotted") +
+   scale_fill_manual(name="Ratio of MSE to WLS[ ] Estimator with", values= cols, breaks = c("var_rat","bias2_rat"), labels =c("Variance and", "Squared Bias Components"))+
+  facet_grid(adj ~ factor(tau), scales = "free_y", space = "free_y") +
+  #scale_y_continuous(limits = c(0, 1.25), breaks = seq(0, 1.25, by = .25)) +
+  coord_flip() +
+  theme(text = element_text(family = "sans",
+                            size = 10),
+        panel.border = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle=45, size = 8, hjust =1, color = "grey40"),
+        axis.text.y = element_text(size = 10, color = "black"),
+        axis.title.y = element_blank(),
+        axis.title.x = element_blank(),
+        legend.text = element_text(size = 10),
+        legend.position = "bottom",
+        strip.text = element_text(size = 11))
+g
+```
+```{r}
+png(paste0("../figures/cta-ri-mse-apx-ht.png"), width = 8, height = 4, units = 'in', res = 300)
+  print(g)
+dev.off()
+```
+
+
+```{r, cta-apx-mse}
+g <- ggplot() +
+  geom_bar(position="stack", stat="identity", data = plot.dat,
+           aes(fill = component, y = value, x = fct_rev(method)), width = .9) +
+  geom_errorbar(data = mse.res.clean, 
+                aes(x = fct_rev(method), ymin = mse_rat - 2*mc_mse_rat_se, ymax = mse_rat + 2*mc_mse_rat_se),
+                linewidth = .25) +
+  ylab("") + xlab("") +
+  geom_hline(yintercept = 1, linewidth = .4, linetype="dotted") +
+   scale_fill_manual(name="Ratio of MSE to WLS[ ] Estimator with", values= cols, breaks = c("var_rat","bias2_rat"), labels =c("Variance and", "Squared Bias Components"))+
+  facet_grid(adj ~ factor(tau), scales = "free_y", space = "free_y") +
+  scale_y_continuous(limits = c(0, 1.25), breaks = seq(0, 1.25, by = .25)) +
+  coord_flip() +
+  theme(text = element_text(family = "sans",
+                            size = 10),
+        panel.border = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle=45, size = 8, hjust =1, color = "grey40"),
+        axis.text.y = element_text(size = 10, color = "black"),
+        axis.title.y = element_blank(),
+        axis.title.x = element_blank(),
+        legend.text = element_text(size = 10),
+        legend.position = "bottom",
+        strip.text = element_text(size = 11))
+g
+```
+```{r}
+png(paste0("../figures/cta-ri-mse-apx.png"), width = 8, height = 4, units = 'in', res = 300)
+  print(g)
+dev.off()
+```
+
+#### Variance
+```{r}
+varlevs <- c("cr","hc1","ikn","loop","ma")
+varlabs <- c("Design (\\ref{eq:crhjvar})","H-W Robust", "Design (\\ref{eq:vikn})", "Design (\\ref{eq:vloop})", "Design (\\ref{eq:mavar})")
+```
+
+
+```{r}
+covg.dat <- covg.res %>%
+  ungroup() %>%
+  mutate(tau = "corr") %>%
+  rbind(covg.res5) %>%
+  select(tau, adj, method, var_type, e_covg)
+   
+var.tab <- var.res %>%
+  ungroup() %>%
+  mutate(tau = "corr") %>%
+  rbind(var.res5) %>%
+  left_join(covg.dat, by = c("tau", "adj", "method", "var_type")) %>%
+  mutate(drop = case_when(str_detect(method, "lin") ~ 1,
+                          str_detect(method, "0") & var_type  %in% c("hc1", "loop") ~ 1,
+                          TRUE ~ 0 )) %>%
+  filter(drop == 0) %>%
+  mutate(rel_bias = sprintf("%1.2f (%1.2f)", e_rel_bias, mc_rel_bias_se)) %>%
+  select(tau,var_type,  method, rel_bias, e_covg) %>%
+  pivot_wider(names_from = tau,
+              values_from = rel_bias:e_covg,
+              names_glue = "{tau}_{.value}") %>%
+  select(method, var_type, starts_with("const"), starts_with("corr")) %>%
+  mutate(var_type = factor(var_type, levels = varlevs, labels = varlabs)) %>%
+  arrange(method)
+```
+
+```{r}
+df <- var.tab %>% 
+  kable(digits = 2, col.names = c("Point", "Variance", "Var Rel Bias" ,"Covg.",
+                                  "Var Rel Bias","Covg."), 
+        align = "llccccc",
+        booktabs = T, format = "latex", escape = FALSE) %>%
+  kable_styling(latex_options = c("hold_position","scale_down")) %>%
+  row_spec(row = 0, align = "c", bold = T) %>%
+  add_header_above(c("Estimator" = 2,  "Constant Effect" =2, "Effect Corr w Size"=2), bold = T) %>%
+  pack_rows("Baseline", 1,6) %>%
+  pack_rows("Cluster Size", 7,11) %>%
+  pack_rows("Cluster Size and Pretest", 12,17)
+
+write_lines(df, '../figures/cta-ri-var-apx.tex')
+out <- read_lines('../figures/cta-ri-var-apx.tex')
+write_lines(out[-c(1, length(out))],  '../figures/cta-ri-var-apx.tex')
+```
+
+```{r}
+var.tab %>% 
+  kable(digits = 2, col.names = c("Point", "Variance", "Var Rel Bias" ,"Covg.",
+                                  "Var Rel Bias","Covg."), 
+        align = "llcccc",
+        booktabs = T, escape = FALSE) %>%
+  kable_styling(latex_options = c("hold_position","scale_down")) %>%
+  row_spec(row = 0, align = "c", bold = T) %>%
+  add_header_above(c("Estimator" = 2,  "Constant Effect" =2, "Effect Corr w Size"=2), bold = T) %>%
+  pack_rows("Baseline", 1,6) %>%
+  pack_rows("Cluster Size", 7,11) %>%
+  pack_rows("Cluster Size and Pretest", 12,17)
+
+```

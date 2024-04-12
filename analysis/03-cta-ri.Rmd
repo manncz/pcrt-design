@@ -1,0 +1,413 @@
+---
+title: "CTA Randomization Inference"
+author: "Charlotte Mann"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyr)
+library(dplyr)
+library(sandwich)
+library(foreach)
+library(dRCT)
+library(tibble)
+library(parallel)
+library(doParallel)
+library(stringr)
+library(lme4)
+library(kableExtra)
+library(ggplot2)
+
+source("00-helper-functions.R")
+```
+
+## Load Data
+
+```{r}
+load("temp/cta-dat-clean.Rdata")
+```
+
+
+```{r, dat, echo = F}
+dat.orig <- dat %>%
+  mutate(ncentered = grade_n - mean(grade_n),
+         precentered =  pre - sum(pre*grade_n)/sum(grade_n)) %>%
+  select(pair, trt, grdlvl, y = out08, pre, precentered, ncentered, grade_n) %>%
+  group_by(pair) %>%
+  mutate(id = row_number()) %>%
+  pivot_wider(id_cols = pair,
+                names_from = id,
+                values_from = c(trt, grdlvl, y, pre, precentered, ncentered, grade_n),
+                names_glue = "{.value}{id}") %>%
+  ungroup()
+```
+
+# Randomization Inference
+
+## Simulation Function
+
+```{r, simfun, echo = F}
+cta_ri_fun <- function(dat = dat.orig, n.sim = 10000, tau_a = 0, tau_b = 0, seed){
+  
+  mean_n <- mean(c(dat$grade_n1, dat$grade_n2))
+  M <- nrow(dat)
+  N <- sum(c(dat$grade_n1, dat$grade_n2))
+ 
+ datri = dat %>%
+    mutate(tau1 = tau_a + tau_b*(grade_n1 - mean_n),
+           tau2 = tau_a + tau_b*(grade_n2 - mean_n),
+           yc1 = y1,
+           yt1 = y1 + tau1,
+           yc2 = y2,
+           yt2 = y2 + tau2)
+ 
+  trueate <- sum(datri$tau1*datri$grade_n1 + datri$tau2*datri$grade_n2)/N
+  
+  sim.out <- foreach(i = 1:n.sim, .combine=rbind) %dopar% {
+  
+    set.seed(seed + i)
+    
+    it.ob <- c()
+    
+    it.ob["datframe"] <- seed + i
+    
+    Tr <- sample(c(0,1), nrow(datri), replace = T)
+    
+    dat.perm <- datri %>%
+        mutate(trt1 = Tr, trt2 = 1-Tr,
+               y1 = trt1*yt1 + trt2*yc1,
+               y2 = trt2*yt2 + trt1*yc2) %>%
+    select(pair:grade_n2)
+    
+    #reshape longer as input for functions
+    dat.long <- dat.perm %>%
+        pivot_longer(cols = trt1:grade_n2,
+                     names_pattern = "(.*)(\\d)",
+                     names_to = c(".value", "pair_n"))
+    
+    #hajek
+    dmlm <- lm(y ~ trt, weights = grade_n, data = dat.long)
+    it.ob["dm_tau"] <- coefficients(dmlm)["trt"]
+    it.ob["dm_var.hc1"] <- vcovHC(dmlm, type = "HC1")["trt","trt"]
+    
+    yhat = predict(dmlm)
+    mod.dat = dat.long %>%
+      select(P = pair, Y = y, Tr = trt, n = grade_n) %>%
+      group_by(P) %>%
+      mutate(pair_n = row_number())
+    it.ob["dm_var.cr"] <- hajek_var_cr(mod.dat = mod.dat, yhat)$vhat_pair
+    
+    #wls w cov
+     reglm <- lm(y ~ trt + grade_n, weights = grade_n, data = dat.long)
+    it.ob["wlsn_tau"] <- coefficients(reglm)["trt"]
+    it.ob["wlsn_var.hc1"] <- vcovHC(reglm, type = "HC1")["trt","trt"]
+    
+    
+    reglm <- lm(y ~ trt + pre, weights = grade_n, data = dat.long)
+    it.ob["wlsx_tau"] <- coefficients(reglm)["trt"]
+    it.ob["wlsx_var.hc1"] <- vcovHC(reglm, type = "HC1")["trt","trt"]
+    
+    #wls w cov - lin
+    reglm <- lm(y ~ trt*(precentered + ncentered), weights = grade_n, data = dat.long)
+    it.ob["wlslinnx_tau"] <- coefficients(reglm)["trt"]
+    it.ob["wlslinnx_var.hc1"] <- vcovHC(reglm, type = "HC1")["trt","trt"]
+    
+    reglm <- lm(y ~ trt*ncentered, weights = grade_n, data = dat.long)
+    it.ob["wlslinn_tau"] <- coefficients(reglm)["trt"]
+    it.ob["wlslinn_var.hc1"] <- vcovHC(reglm, type = "HC1")["trt","trt"]
+    
+    #wls w cov & n
+    reglm <- lm(y ~ trt + pre + grade_n, weights = grade_n, data = dat.long)
+    it.ob["wlsxn_tau"] <- coefficients(reglm)["trt"]
+    it.ob["wlsxn_var.hc1"] <- vcovHC(reglm, type = "HC1")["trt","trt"]
+  
+     
+    #random effects
+    relm <- lmer(y ~ trt + (1|pair), data =dat.long, weights = grade_n)
+    it.ob["re_tau"] = fixef(relm)["trt"]
+    it.ob["re_var.reg"] = vcov(relm)["trt","trt"]
+    
+    relm <- lmer(y ~ trt + pre + grade_n + (1|pair), data =dat.long, weights = grade_n)
+    it.ob["renx_tau"] = fixef(relm)["trt"]
+    it.ob["renx_var.reg"] = vcov(relm)["trt","trt"]
+  
+    #fe
+    felm <- lm(y ~ trt + pair, weights = grade_n, data = dat.long)
+    it.ob["fe_tau"] <- coefficients(felm)["trt"]
+    it.ob["fe_var.hc1"] <- vcovHC(felm, type = "HC1")["trt","trt"]
+    
+    felm <- lm(y ~ trt + grade_n + pair, weights = grade_n, data = dat.long)
+    it.ob["fen_tau"] <- coefficients(felm)["trt"]
+    it.ob["fen_var.hc1"] <- vcovHC(felm, type = "HC1")["trt","trt"]
+    
+    felm <- lm(y ~ trt + pre + pair, weights = grade_n, data = dat.long)
+    it.ob["fex_tau"] <- coefficients(felm)["trt"]
+    it.ob["fex_var.hc1"] <- vcovHC(felm, type = "HC1")["trt","trt"]
+    
+    felm <- lm(y ~ trt + pre + grade_n + pair, weights = grade_n, data = dat.long)
+    it.ob["fenx_tau"] <- coefficients(felm)["trt"]
+    it.ob["fenx_var.hc1"] <- vcovHC(felm, type = "HC1")["trt","trt"]
+     
+    #imai
+    paired <- pair(Y=dat.long$y, Tr=dat.long$trt, Z=dat.long$grade_n, P = dat.long$pair, n =dat.long$grade_n)
+    waest <- weighted_effect_est(ordered = paired$ordered, n_ordered = paired$n_ordered,
+                                    weight = "arithmetic")
+    it.ob["imai_tau"] <- waest$tau
+    it.ob["imai_var.ikn"] <- waest$vhat_ikn
+    
+    hdat <- dat.long %>%
+          ungroup() %>%
+          mutate(Ytilde = grade_n*y*(2*M/N),
+                 ntilde = grade_n - mean(grade_n),
+                 xtilde = pre*grade_n - grade_n*sum(pre*grade_n)/sum(grade_n))
+    
+    htlm <- lm(Ytilde ~ trt, data = hdat)
+    it.ob["ht_tau"] <- coefficients(htlm)["trt"]
+    it.ob["ht_var.hc1"] <- vcovHC(htlm, type = "HC1")["trt","trt"]
+    it.ob["ht_var.ma"] <- des_raj_dif(Y=dat.long$y, Tr=dat.long$trt, P = dat.long$pair, n =dat.long$grade_n, type = "ht")$var
+    it.ob["ht_var.loop"] <- p_loop_var(assigned = paired$agg, v1 = rep(0,M), v2 = rep(0,M), n_assigned = paired$n_assigned)
+    
+    #des raj (middleton & aronow)
+    drdout <- des_raj_dif(Y=dat.long$y, Tr=dat.long$trt, P = dat.long$pair, n =dat.long$grade_n, type = "adj")
+    it.ob["drdn_tau"] <- drdout$tauhat
+    it.ob["drdn_var.ma"] <- drdout$varhat
+    
+    drdout <- des_raj_dif(Y=dat.long$y, Tr=dat.long$trt, P = dat.long$pair, Z = dat.long$pre, n =dat.long$grade_n, type = "adj")
+    it.ob["drdnx_tau"] <- drdout$tauhat
+    it.ob["drdnx_var.ma"] <- drdout$varhat
+    
+    #su & ding
+    
+    htlm <- lm(Ytilde ~ trt*ntilde, data = hdat)
+    it.ob["htn_tau"] <- coefficients(htlm)["trt"]
+    it.ob["htn_var.hc1"] <- vcovHC(htlm, type = "HC1")["trt","trt"]
+    
+     htlm <- lm(Ytilde ~ trt*(ntilde + xtilde), data = hdat)
+    it.ob["htnx_tau"] <- coefficients(htlm)["trt"]
+    it.ob["htnx_var.hc1"] <- vcovHC(htlm, type = "HC1")["trt","trt"]
+    
+    #cploop
+    punadj = p_loop(Y=dat.long$y, Tr=dat.long$trt,  P = dat.long$pair, n = dat.long$grade_n, pred = p_simple)
+    it.ob["ploopMI_tau"] <- punadj["tauhat"]
+    it.ob["ploopMI_var.loop"] <- punadj["varhat"]
+    
+    ploop_out = p_loop(Y=dat.long$y, Tr=dat.long$trt,  Z = dat.long$grade_n, P = dat.long$pair, n =dat.long$grade_n, pred = p_ols_interp, weighted_imp = T)
+    it.ob["ploopwlsn_tau"] <- ploop_out["tauhat"]
+    it.ob["ploopwlsn_var.loop"] <- ploop_out["varhat"]
+    
+    
+    ploop_out = p_loop(Y=dat.long$y, Tr=dat.long$trt,  Z = dat.long$pre, P = dat.long$pair, n =dat.long$grade_n, pred = p_ols_interp, weighted_imp = T)
+    it.ob["ploopwlsx_tau"] <- ploop_out["tauhat"]
+    it.ob["ploopwlsx_var.loop"] <- ploop_out["varhat"]
+    
+    ploop_out = p_loop(Y=dat.long$y, Tr=dat.long$trt,  Z = cbind(dat.long$pre, dat.long$grade_n), P = dat.long$pair, n =dat.long$grade_n, pred = p_rf_interp, weighted_imp = T)
+    it.ob["ploopwrfnx_tau"] <- ploop_out["tauhat"]
+    it.ob["ploopwrfnx_var.loop"] <- ploop_out["varhat"]
+    
+    ploop_out = p_loop(Y=dat.long$y, Tr=dat.long$trt,  Z = cbind(dat.long$pre, dat.long$grade_n), P = dat.long$pair, n =dat.long$grade_n, pred = p_ols_interp, weighted_imp = T)
+    it.ob["ploopwlsnx_tau"] <- ploop_out["tauhat"]
+    it.ob["ploopwlxnx_var.loop"] <- ploop_out["varhat"]
+    
+    
+    it.ob
+  
+  }
+  
+  return(list(sim.out = sim.out, trueate = trueate))
+  
+}
+```
+
+## Run Simulations
+
+```{r, runsims}
+numCores <- detectCores()
+registerDoParallel(numCores)
+
+suppressMessages(
+simout_ri <- cta_ri_fun(dat.orig, n.sim = 10000, tau_a = 0, tau_b = 0, seed = 89)
+)
+save(simout_ri, file = "temp/cta_ri/simout_cta_tau0.Rdata")
+
+suppressMessages(
+simout_ri <- cta_ri_fun(dat.orig, n.sim = 10000, tau_a = 10, tau_b = 0, seed = 89)
+)
+save(simout_ri, file = "temp/cta_ri/simout_cta_tau10.Rdata")
+
+
+suppressMessages(
+simout_ri <- cta_ri_fun(dat.orig, n.sim = 10000, tau_a = 30, tau_b = 0, seed = 89)
+)
+save(simout_ri, file = "temp/cta_ri/simout_cta_tau30.Rdata")
+
+
+suppressMessages(
+simout_ri <- cta_ri_fun(dat.orig, n.sim = 10000, tau_a = 10, tau_b = 3/150, seed = 89)
+)
+save(simout_ri, file = "temp/cta_ri/simout_cta_taun.Rdata")
+
+
+stopImplicitCluster()
+```
+
+## Clean Results
+
+```{r, echo = F}
+nocov = c("ht", "dm", "fe",  "imai", "ploopMI")
+adjn = c("wlsn", "fen", "htn", "drdn", "ploopwlsn")
+adjcovn = c("wlsxn", "wlslinnx", "fenx",  "htnx", "drdnx", "ploopwlsnx","ploopwrfnx")
+
+nocov.labs <- c("IDPD[0, $\\emptyset$]","WLS[$\\emptyset$]","WLS-P[$\\emptyset$]", "IDPD[LOI MI, $\\emptyset$]","IDPD[LOO MI, $\\emptyset$]")
+adjn.labs = c("WLS[n]","WLS-P[n]", "WLS-HT[n]", "IDPD[LOO DR, n]", "IDPD[LOO WLS, n]")
+adjcovn.labs = c("WLS[(n,x)]", "WLS-lin[(n,x)]", "WLS-P[(n,x)]", "WLS-HT[(n,x)]", "IDPD[LOO DR, (n,x)]", "IDPD[LOO WLS, (n,x)]","IDPD[LOO RF, (n,x)]")
+
+
+allmethods <- c(nocov, adjn, adjcovn)
+methodslab<- c(nocov.labs, adjn.labs, adjcovn.labs)
+
+
+M <- 22
+
+z <- qnorm(p = 1-(.05/2))
+
+treg <- qt(p = 1-(.05/2), df = 2*M-2)
+tfe <- qt(p = 1-(.05/2), df = M-1)
+tregn <- qt(p = 1-(.05/2), df = 2*M-3)
+tregcovn <- qt(p = 1-(.05/2), df = 2*M-4)
+tfen <- qt(p = 1-(.05/2), df = M-2)
+tfecovn <- qt(p = 1-(.05/2), df = M-3)
+tcovnxinter <- qt(p = 1-(.05/2), df = 2*M-6)
+```
+
+
+```{r, warning = F, eval = F, echo = F}
+teffs <- c("0","10","30","n")
+
+for(t in teffs){
+  
+  ate <- t
+  
+  load(paste0("temp/cta_ri/simout_cta_tau",ate,".Rdata"))
+  
+  teff <- simout_ri$trueate
+  
+  all.sim <- simout_ri$sim.out %>%
+    data.frame() %>%
+    mutate(group =factor(rep(1:100,each=100))) %>%
+    pivot_longer(!datframe&!group,
+                 names_to=c("method", "type"),
+                  names_pattern = "(\\w*)_(.*)") %>%
+    separate(type, into = c("est_type", "var_type")) %>%
+    mutate(method = str_replace(method, "wlx","wls"),
+           var_type = case_when(is.na(var_type) ~ "",
+                                TRUE ~ var_type)) %>%
+    filter(method %in% allmethods) %>%
+    mutate(adj = case_when(method %in% nocov ~ "Baseline",
+                                method %in% adjn ~ "n",
+                                method %in% adjcovn ~ "(n,x)")) %>%
+    mutate(adj = factor(adj, levels = c("Baseline", "n", "(n,x)")))
+  
+
+  dat.vartrue.group <- all.sim %>%
+        filter(est_type == "tau") %>%
+        group_by(group, adj, method) %>%
+        summarize(var_group = var(value))
+  
+  dat.vartrue <- all.sim %>%
+        filter(est_type == "tau") %>%
+        group_by(adj, method) %>%
+        summarize(est_true_var = var(value))
+  
+  var.res.group <- all.sim %>%
+    filter(est_type == "var") %>%
+    select(datframe, group, method, adj, var_type, nom_var = value) %>%
+    left_join(dat.vartrue.group, by = c("group","method","adj")) %>%
+    group_by(group, adj, method, var_type) %>%
+    mutate(rel_bias = nom_var/var_group) %>%
+    summarize(var_rel_bias_group = mean(rel_bias),
+              var_group = mean(var_group)) %>%
+    group_by(adj, method, var_type) %>%
+    summarize(mc_rel_bias_se = sd(var_rel_bias_group)/sqrt(100),
+              mc_var_se = sd(var_group)/sqrt(100))
+    
+
+  var.res.all <- all.sim %>%
+    filter(est_type == "var") %>%
+    select(method, adj, var_type, nom_var = value) %>%
+    left_join(dat.vartrue, by = c("adj", "method")) %>%
+    group_by(adj, method, var_type) %>%
+    mutate(rel_bias = nom_var/est_true_var) 
+  
+  var.res <- var.res.all %>%
+    summarize(e_rel_bias = mean(rel_bias),
+              e_nom_var = mean(nom_var),
+              est_nom_var_se = sd(nom_var)/sqrt(10000),
+              est_true_var = mean(est_true_var)) %>%
+    left_join(var.res.group, by = c("adj", "method", "var_type"))  %>%
+    mutate(method = factor(method, levels = allmethods, labels = methodslab))
+
+
+  
+  covg.res.all <- all.sim %>%
+    filter(est_type == "var") %>%
+    rename(nom_var = value) %>%
+    select(-est_type) %>%
+    left_join(all.sim %>% filter(est_type == "tau") %>% select(datframe, adj, method, point_est = value), 
+              by = c("datframe", "adj", "method")) %>%
+    mutate(tstar = case_when(str_detect(method, "IDPD")|var_type == "ma" ~ z,
+                             method == "dm" ~ treg,
+                             method == "wlsn" ~ tregn,
+                             method == "wlsnx" ~ tregcovn,
+                             method == "fe" ~ tfe,
+                             method == "fen" ~ tfen,
+                             method == "fenx" ~ tfecovn,
+                             method == "htn" ~ tregcovn,
+                             TRUE ~ tcovnxinter
+                             )) %>%
+    ungroup() %>%
+    mutate(covg = teff >= point_est - tstar*sqrt(nom_var) & teff <= point_est + tstar*sqrt(nom_var))
+  
+  covg.res <- covg.res.all %>%
+    group_by(adj, method, var_type) %>%
+    summarize(e_covg = mean(covg), mc_covg_se = sd(covg*1)/sqrt(10000)) %>%
+    mutate(method = factor(method, levels = allmethods, labels = methodslab))
+    
+
+  mse.res.group <- all.sim %>%
+    filter(est_type == "tau") %>%
+    group_by(group, adj, method) %>%
+    summarize(mse_group = (mean(value)-teff)^2 + var(value)) %>%
+    mutate(comp_mse = case_when(method == "dm" ~ mse_group,
+                                TRUE ~ NA_real_)) %>%
+    group_by(group) %>%
+    mutate(comp_mse = mean(comp_mse, na.rm = T),
+           mse_rat = mse_group/comp_mse) %>%
+    group_by(adj, method) %>%
+    summarize(mc_mse_se = sd(mse_group)/sqrt(100),
+              mc_mse_rat_se = sd(mse_rat)/sqrt(100))
+  
+  
+   mse.res <- all.sim %>%
+     filter(est_type == "tau") %>%
+     group_by(adj, method) %>%
+     summarize(e_tauhat = mean(value),
+               est_tauhat_se = sd(value)/sqrt(10000),
+               est_true_var = var(value)) %>%
+     mutate(mse = (e_tauhat - teff)^2 + est_true_var,
+            bias = e_tauhat - teff,
+            bias2 = bias^2) %>%
+     ungroup() %>%
+     mutate(comp_mse = case_when(method == "dm" ~ mse,
+                                TRUE ~ NA_real_),
+           comp_mse = mean(comp_mse, na.rm = T),
+           mse_rat = mse/comp_mse) %>%
+     left_join(mse.res.group, by = c("adj","method")) %>%
+     mutate(method = factor(method, levels = allmethods, labels = methodslab))
+  
+  save(var.res, covg.res, mse.res, covg.res.all, var.res.all, file = paste0("temp/cta_plot/plotdat_ri_cta_tau",ate,".Rdata"))
+  
+}
+
+```
