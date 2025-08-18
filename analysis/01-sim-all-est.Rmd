@@ -17,18 +17,19 @@ library(ggplot2)
 library(sandwich)
 library(stringr)
 library(lme4)
+library(devtools)
 ```
 
 Load package from Github Repo `dRCT`
 ```{r}
-if(!("dRCT" %in% installed.packages())) install_github("manncz/dRCT/dRCT")
+if(!("dRCT" %in% installed.packages())) install_github("manncz/dRCT")
 library(dRCT)
 ```
 
 Load all helper functions
 ```{r}
-source("00-helper-functions.R")
-source("00-sim-helpers.R")
+source("analysis/00-helper-functions.R")
+source("analysis/00-sim-helpers.R")
 ```
 
 Estimators with associate labels
