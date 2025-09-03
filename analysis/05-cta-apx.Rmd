@@ -1,0 +1,225 @@
+---
+title: "CTA Appendix Analysis"
+author: "Charlotte Mann"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(randomForest)
+library(kableExtra)
+library(foreach)
+```
+
+Load real data RI results and CTA data
+```{r}
+load("temp/cta-dat-clean.Rdata")
+load("temp/cta_plot/plotdat_ri_cta_tau10.Rdata")
+```
+
+
+```{r, dat, echo = F}
+# Clean CTA data
+
+dat.orig <- dat %>%
+  mutate(ncentered = grade_n - mean(grade_n),
+         precentered =  pre - sum(pre*grade_n)/sum(grade_n)) %>%
+  select(pair, trt, grdlvl, y = out08, pre, precentered, ncentered, grade_n) %>%
+  group_by(pair) %>%
+  mutate(id = row_number()) %>%
+  pivot_wider(id_cols = pair,
+                names_from = id,
+                values_from = c(trt, grdlvl, y, pre, precentered, ncentered, grade_n),
+                names_glue = "{.value}{id}") %>%
+  ungroup() |> 
+  mutate(pair_new = paste0("P", LETTERS[1:22])) # add a new identifier for privacy
+```
+
+Generate data frame of treatment assignment permutations. This should align exactly with the simulation due to the seeds.
+```{r}
+seed <- 89
+n.sim <- 10000
+
+treatperm <- foreach(i = 1:n.sim, .combine=rbind) %do% {
+  
+    set.seed(seed + i)
+    
+    it.ob <- c()
+    
+    it.ob["datframe"] <- seed + i
+    
+    it.ob <- c(it.ob, Tr <- sample(c(0,1), 22, replace = T))
+}
+
+treatperm <- data.frame(treatperm)
+colnames(treatperm) <- c("datframe", dat.orig$pair_new)
+```
+
+## Investigate Problem Treatment Assignments
+
+```{r}
+vardatloo <- var.res.all |> 
+  select(-nom_var) |>
+  left_join(covg.res.all, 
+            by = c("datframe", "method", "var_type")) |>
+  filter(method == "ploopwlsnx") |>
+  mutate(conservative = as.numeric(rel_bias > 1),
+         covg = as.numeric(covg)) |>
+  left_join(treatperm, by = "datframe") |> 
+  ungroup() 
+```
+
+
+We fit a random forest model, predicting whether the variance estimate is conservative from the 10,000 simulation iterations, using the treatment assignment indicators as the only predictors.
+
+```{r}
+moddat <- vardatloo |> 
+  select(conservative, covg, starts_with("P"), -point_est)
+
+rfout <- randomForest(factor(conservative) ~ . - covg, 
+                      data = moddat, importance = T)
+
+
+rfout$importance |> 
+  data.frame() |> 
+  arrange(-MeanDecreaseAccuracy) |> 
+  kable() |> 
+  kable_styling()
+```
+Based on the variable importance from this model, it appears that we should look into pairs "R", "C", and "A". 
+
+```{r, message = FALSE}
+vardatloo |> 
+  group_by(PA, PC, PR) |> 
+  summarize(conservative =  mean(conservative), 
+            covg = mean(covg), 
+            rel_bias = mean(rel_bias),
+            prop_rand = n()/10000) |> 
+  arrange(conservative) |> 
+  kable() |> 
+  kable_styling()
+```
+The problem assignments thus seem to be when pair A has the opposite treatment assignment as both pairs C and R. For these two "problem" treatment assignments, the variance estimator is never conservative and coverage is well under 95%.  
+
+## Look at Identified Treatment Assignments
+
+We will call an assignment where the first school in Pair A is assigned control and the first schools in Pairs C and R are assigned as treatment "Problem Assignment 1". The assignment where the first school in Pair A is assigned treatment and the first schools in Pairs C and R are control is "Problem Assignment 2".
+
+```{r}
+#setting up two "problem" treatment arrangements -- leaving the rest of the treatment assignment as they are in the orignial RCT.
+
+dat.orig.long <- dat.orig |> 
+        pivot_longer(cols = trt1:grade_n2,
+                     names_pattern = "(.*)(\\d)",
+                     names_to = c(".value", "pair_n")) |> 
+  mutate(trta = case_when(pair_new == "PA" & pair_n == "1" ~ 0,
+                          pair_new == "PA" & pair_n == "2" ~ 1,
+                          pair_new == "PC" & pair_n == "1" ~ 1,
+                          pair_new == "PC" & pair_n == "2" ~ 0,
+                          pair_new == "PR" & pair_n == "1" ~ 1,
+                          pair_new == "PR" & pair_n == "2" ~ 0,
+                          TRUE ~ trt),
+         trtb = case_when(pair_new == "PA" & pair_n == "1" ~ 1,
+                          pair_new == "PA" & pair_n == "2" ~ 0,
+                          pair_new == "PC" & pair_n == "1" ~ 0,
+                          pair_new == "PC" & pair_n == "2" ~ 1,
+                          pair_new == "PR" & pair_n == "1" ~ 0,
+                          pair_new == "PR" & pair_n == "2" ~ 1,
+                          TRUE ~ trt)) |> 
+  rename(trtorig = trt) |> 
+  pivot_longer(cols = starts_with("trt"),
+               names_prefix = "trt",
+               names_to = "version",
+               values_to = "trt") |> 
+  mutate(version = fct_relevel(version,
+                               "orig", "a", "b"),
+         version = fct_recode(version,
+                            "Original Assignment" = "orig", 
+                            "Problem Assignment 1" = "a", 
+                            "Problem Assignment 2" = "b"),
+         pairtype = case_when(pair_new %in% c("PA", "PC", "PR") ~ "Problem Child",
+                              TRUE ~ "Good Buddy"),
+         pairntrt = case_when(pairtype == "Problem Child" & trt == 1 ~ "Treated School",
+                              pairtype == "Problem Child" & trt == 0 ~ "Control School",
+                              TRUE ~ "Other Schools"),
+         pairntrt = fct_relevel(pairntrt,
+                                "Treated School",
+                                "Control School",
+                                "Other Schools"),
+         trtfct = fct_recode(as.character(trt),
+                          "Treatment Average" = "1",
+                          "Control Average" = "0"))
+```
+
+Let's look at the relationship between the pre and post TAKS passing rates for the 44 schools in the CTA trial. We compare the real treatment assignment with the problem assignments (leaving all schools not in the "problem pairs" with their original assignments). 
+
+```{r, echo = F}
+cols = c("#1F78B4", "#FDBF6F", "grey50")
+```
+
+```{r, echo = F, message = F}
+ggplot(data = dat.orig.long,
+       aes(x = pre, y = y)) + 
+  geom_smooth(method = lm, 
+              aes(linetype = trtfct,
+                  group = trtfct),
+              se = F,
+              color = "#313695") +
+    geom_jitter(aes(color = pairntrt,
+                   size = pairntrt),
+                alpha = .9) +
+  facet_grid(cols = vars(version)) +
+  scale_color_manual(values = cols) +
+  scale_size_manual(values = c(2, 2, 1)) +
+  labs(x = "Pre-Test TAKS Passing Rate",
+       y = "Outcome TAKS Passing Rate",
+       color = "School In Problem Pair?",
+       size = "School In Problem Pair?",
+       linetype = "")
+```
+
+This plot illustrates that in the problem assignments, the slopes of the relationships between the pre and post tests differs between the treatment and control schools. This could contribute to some irregularity with the LOO variance estimation.
+
+Looking at this another way, we can compare the percent change in the TAKS passing rate for the control versus treatment school within each pair. The % change is defined as $\frac{post - pre}{pre}$.
+
+```{r, echo = F}
+dat.wide <- dat.orig.long |> 
+  select(version, trt, pair_new, 
+         pairtype, 
+         grdlvl, grade_n, pre, y) |> 
+  pivot_wider(names_from = trt, values_from = c(grade_n, pre, y),
+              names_glue = "{.value}{trt}") |> 
+  mutate(pre_post_perc_dif1 = (y1-pre1)/pre1,
+         pre_post_perc_dif0 = (y0-pre0)/pre0,
+         pair_lab = case_when(pairtype == "Problem Child"  ~ pair_new,
+                              TRUE ~ "")) 
+```
+
+```{r, echo = F}
+cols = c("grey50", "#1F78B4")
+```
+
+```{r, echo = F}
+ggplot(data = dat.wide, aes(x = pre_post_perc_dif0, 
+                            y = pre_post_perc_dif1, 
+                            color = pairtype)) +
+  geom_jitter() +
+  geom_text(aes(label = pair_lab), 
+            color = "black", 
+            vjust = "outward", 
+            hjust = "inward") +
+  geom_abline(slope = 1, intercept = 0) +
+  facet_grid(cols = vars(version)) +
+  scale_color_manual(values = cols) +
+  xlim(-.1, .5) +
+  ylim(-.1, .5) +
+  theme(legend.position = "bottom") +
+  labs(x = "% Difference in Pre and Post TAKs for Control Schools",
+       y = "% Difference in Pre and Post TAKs for Treatment Schools",
+       color = "School In Problem Pair?")
+```
+
+
+In all of our "problem" pairs, one school had a among the largest improvement in their TAKS passing rate (~40% increase) while the other had little improvement OR the passing rate decreased. In the "problem" assignments, the school with the great improvement was assigned either treament or control in **all three** pairs. 

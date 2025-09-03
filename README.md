@@ -20,9 +20,13 @@ This repository contains the code used to complete the analyses discussed in "A 
     * inputs: `cta-dat-clean.Rdata`
     * outputs: `cta_ri/*`, `cta_plot/*`
     * runs randomization inference simulations with CTAI data and cleans simulation data for figures
-  * `03-figures.Rmd`
+  * `04-figures.Rmd`
     * inputs: `sims_m20_n150/*`,`sims_m200_n150/*`, `sims_m20_n150_neff/*`,`sims_m200_n150_neff/*`, `cta-dat-clean.Rdata`, `cta_plot/*`
     * outputs: all figures
+  * `05-cta-apx.Rmd`
+    * inputs: `cta-dat-clean.Rdata`, `cta_plot/*`
+    * outputs: `05-cta-apx.html`
+    * explores irregular variance estimation with real data
   * `temp/`
     * `sims_m20_n150/`
     * `sims_m200_n150/`
@@ -40,3 +44,4 @@ This repository contains the code used to complete the analyses discussed in "A 
 * Simulations were run in the University of Michigan Great Lakes High Performance Computing environment.
 * Simulations for 20 pairs were run across 36 cores with .75 GB of memory per core. They took approximately 13 hours or 17-21:43 in CPU walltime.
 * Simulations for 200 pairs were were run across 36 cores with 1 GB of memory per core. They took approximately 2 days and 18 hours or 90-23:22 in CPU walltime.
+* Users will not be able to run scripts `02`, `03`, or `05` as is due to data use agreements for the CTA-I trial.
