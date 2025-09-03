@@ -8,16 +8,10 @@ output: html_document
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 library(foreach)
-library(tidyr)
-library(dplyr)
-library(ggplot2)
-library(stringr)
-library(ggpubr)
-library(xtable)
-library(xlsx)
-library(ggh4x)
+library(tidyverse)
 library(forcats)
-library(readr)
+library(ggpubr)
+library(ggh4x)
 library(kableExtra)
 ```
 
@@ -78,7 +72,7 @@ alldat <- alldat %>%
   rename(settingorig = setting) %>%
   mutate(setting = paste(paireff, n, tau_type, sep = "\n"))
 
-save(alldat,file = "temp/simresultdat.Rdata")
+save(alldat, file = "temp/simresultdat.Rdata")
 ```
 
 # Simulations Main Text
@@ -103,7 +97,7 @@ est.labs.main <- c(nocov.labs, adjn.labs,  adjcovn.labs)
 settings.main = unique(alldat$setting)[c(1,5,7,8)]
 ```
 
-### MSE
+## MSE
 
 ```{r}
 msese <- alldat %>%
@@ -145,7 +139,8 @@ plot.dat.rat <- msese %>%
 
 cols <- c("#1F78B4","#FDBF6F")
 ```
-#### Ratio
+
+### Ratio
 
 
 ```{r, msefigcompare-rat}
@@ -156,7 +151,9 @@ g <- ggplot() +
                 aes(x = fct_rev(method), ymin = le_rat, ymax = upe_rat), linewidth = .25) +
   ylab("") + xlab("") +
   geom_hline(yintercept = 1, linewidth = .4, linetype="dotted") +
-   scale_fill_manual(name="Ratio of MSE to WLS[ ] Estimator with", values= cols, breaks = c("var_rat","bias2_rat"), labels =c("Variance and", "Squared Bias Components"))+
+  scale_fill_manual(name="Ratio of MSE to WLS[ ] Estimator with", values= cols,
+                    breaks = c("var_rat","bias2_rat"), 
+                    labels =c("Variance and", "Squared Bias Components"))+
   facet_grid(adj ~ setting, scales = "free_y", space = "free_y") +
   scale_y_continuous(limits = c(0, 1.35), breaks = seq(0, 1.25, by = .25)) +
   coord_flip() +
@@ -214,12 +211,15 @@ g
 ```
 
 ```{r}
-png(paste0("../figures/mse-maintext-m200-rat.png"), width = 8, height = 4.5, units = 'in', res = 300)
+png("../figures/mse-maintext-m200-rat.png",
+    width = 8, height = 4.5, units = 'in', res = 300)
   print(g)
 dev.off()
 ```
 
-### Variance and coverage
+## Variance and coverage
+
+### Compile Results Data
 
 ```{r}
 dat.vartrue <- alldat %>%
@@ -254,6 +254,7 @@ tabdat <- alldat %>%
 save(tabdat, file = "temp/varresultdat.Rdata")
 ```
 
+### Table Version
 
 ```{r}
 nocov.main = c("horvitz-thompson","hajek", "fixed-effects","imai", "ploop MI")
@@ -269,12 +270,12 @@ est.labs.main.var <- c(nocov.labsv, adjn.labsv,  adjcovn.labsv)
 
 varlevs.main <- c("cr","robust","ikn","loop","ma")
 varlabs.main <- c("Design (\\ref{eq:crhjvar})","H-W Robust", "Design (\\ref{eq:vikn})", "Design (\\ref{eq:vloop})", "Design (\\ref{eq:mavar})")
+
+levs <- settings.main
+labss <- c("1","2","3","4")
 ```
 
 ```{r}
-levs <- settings.main
-labss <- c("1","2","3","4")
-
 tabform <- tabdat %>%
   filter(method %in% est.names.main & setting %in% settings.main) %>%
   mutate(keep = case_when(method == "hajek" & est_type== "cr" ~ 1,
@@ -391,6 +392,136 @@ out <- str_replace(out, "\\{Variance Est.", "{\\\\textbf{Variance Est.}")
 write_lines(out[-c(1, length(out))], '../figures/covg_main.tex')
 ```
 
+### Plot Version
+
+```{r}
+varlabs.plot <- c("Design (dC&R)","H-W Robust", 
+                  "Design (IKN)", "Design", "Design (M&A)")
+
+cols <- c( "#FDBF6F", "#313695", "#1F78B4", "#fee090",  "#a50026")
+```
+
+```{r}
+varplot <- tabdat %>%
+  filter(method %in% est.names.main,
+         setting %in% settings.main,
+         size == 20) %>%
+  mutate(keep = case_when(method == "hajek" & est_type== "cr" ~ 1,
+                          (method == "horvitz-thompson" | str_detect(method, "des")) &
+                            est_type == "ma" ~ 1,
+                          method == "imai" & est_type == "ikn" ~ 1,
+                          str_detect(method,"fixed|wls") & est_type == "robust" ~ 1,
+                          str_detect(method, "ploop") & est_type == "loop" ~ 1,
+                          TRUE ~ 0)) %>%
+  filter(keep == 1) %>%
+  mutate(setting = factor(setting, levels = levs),
+         method = factor(method, levels = est.names.main, labels = est.labs.main),
+         var_type = factor(est_type, levels = varlevs.main, labels = varlabs.plot)) %>%
+  mutate(adj = case_when(method %in% nocov.labs ~ "Baseline",
+                              method %in% adjn.labs ~ "n",
+                              method %in% adjcovn.labs ~ "(n,x)"),
+         est_group = case_when(str_detect(method, "WLS-P") ~ "WLS-P",
+                               str_detect(method, "LOO") ~ "LOO IDPD",
+                               str_detect(method, "WLS") ~ "WLS",
+                               str_detect(method, "0") ~ "HT",
+                               str_detect(method, "LOI") ~ "AMW"
+                               ),
+          adj = fct_relevel(adj, 
+                            "Baseline", "n", "(n,x)"),
+         est_group = fct_relevel(est_group,
+                                 "HT", "WLS", "WLS-P", "AMW", "LOO IDPD"),
+         var_group = case_when(str_detect(var_type, "H-W") ~ var_type,
+                               str_detect(var_type, "Design") ~ "Design Based")) %>%
+  select(method, est_group, var_type, var_group,
+         adj, size, setting, 
+         covg = e_covg, var_bias = mean_rel_bias,
+         se_covg, se_rel_bias) %>%
+  mutate(lb_covg = covg - 2*se_covg,
+         ub_covg = covg + 2*se_covg,
+         lb_bias = var_bias - 2*se_rel_bias,
+         ub_bias = var_bias + 2*se_rel_bias)
+
+
+```
+
+
+```{r}
+g <- ggplot(data = varplot) +
+  geom_hline(yintercept = 1, linewidth = .4, linetype = "dotted") +
+  geom_errorbar(aes(x = fct_rev(method), ymin = lb_bias, ymax = ub_bias),
+                linewidth = .25, width = .6) +
+  geom_point(aes(x = fct_rev(method), y =  var_bias, 
+                 color = est_group, shape = var_group), size = 2) +
+  facet_grid(adj ~ setting, scales = "free_y", space = "free_y") +
+  coord_flip() +
+  scale_y_continuous(limits = c(0.75, 6.5),
+                     breaks = c(0.75, 1, 1.5, 3, 5),
+                     transform = "log") +
+  scale_color_manual(values = cols) +
+  labs(y = "Relative Bias of Variance Estimator",
+       x = "",
+       shape = "Variance Estimator") +
+  guides(colour = "none") +
+  theme(text = element_text(family = "sans", size = 10),
+        panel.border = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle=45, size = 8, 
+                                    hjust =1, color = "grey40"),
+        axis.text.y = element_text(size = 10, color = "black"),
+        legend.text = element_text(size = 10),
+        legend.position = "none",
+        strip.text = element_text(size = 11))
+
+g
+```
+
+```{r}
+png("../figures/var-maintext-m20.png",
+    width = 8, height = 3.5, units = 'in', res = 300)
+  print(g)
+dev.off()
+```
+
+
+```{r}
+g <- ggplot(data = varplot) +
+  geom_hline(yintercept = .95, linewidth = .4, linetype = "dotted") +
+  geom_errorbar(aes(x = fct_rev(method), ymin = lb_covg, ymax = ub_covg),
+                linewidth = .25, width = .6) +
+  geom_point(aes(x = fct_rev(method), y =  covg, 
+                 color = est_group, shape = var_group), size = 2) +
+  facet_grid(adj ~ setting, scales = "free_y", space = "free_y") +
+  coord_flip() +
+  scale_color_manual(values = cols) +
+  labs(y = "Estimated Coverage Probability",
+       x = "",
+       shape = "Variance Estimator") +
+  guides(colour = "none") +
+  theme(text = element_text(family = "sans", size = 10),
+        panel.border = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        plot.title = element_text(hjust = 0.5),
+        axis.text.x = element_text(angle=45, size = 8, 
+                                    hjust =1, color = "grey40"),
+        axis.text.y = element_text(size = 10, color = "black"),
+        legend.text = element_text(size = 10),
+        legend.position = "bottom",
+        strip.text = element_text(size = 11))
+g
+```
+
+```{r}
+png("../figures/covg-maintext-m20.png",
+    width = 8, height = 4, units = 'in', res = 300)
+  print(g)
+dev.off()
+```
+
 # Simulation Appendix
 
 ### Appendix labels
@@ -419,7 +550,7 @@ varlabs.apx <- c("H-W Robust", "Regression", "Design (\\ref{eq:crhjvar})", "Desi
 ### MSE
 
 ```{r}
-load("temp/simresultdat.Rdata")
+load("analysis/temp/simresultdat.Rdata")
 
 ```
 
@@ -499,7 +630,7 @@ for(p in c("Pair Effect", "No Pair Effect")) {
 
 ### Variance and Coverage
 ```{r}
-load("temp/varresultdat.Rdata")
+load("analysis/temp/varresultdat.Rdata")
 ```
 
 ```{r}
@@ -635,12 +766,12 @@ if(p=="No Pair Effect"){
 
 ```{r}
 sumdat = foreach(x = labels, .combine = rbind) %do% {
-  load(paste0("temp/sims_m20_n150_neff/simout-", x, "-covout.Rdata"))
+  load(paste0("analysis/temp/sims_m20_n150_neff/simout-", x, "-covout.Rdata"))
   
    temp = results.sum %>%
     mutate(setting = x, size = 20)
    
-  load(paste0("temp/sims_m200_n150_neff/simout-", x, "-covout.Rdata"))
+  load(paste0("analysis/temp/sims_m200_n150_neff/simout-", x, "-covout.Rdata"))
   
    dat = results.sum %>%
     mutate(setting = x, size = 200) %>%
@@ -649,13 +780,13 @@ sumdat = foreach(x = labels, .combine = rbind) %do% {
 }
 
 alldat =  foreach(x = labels, .combine = rbind) %do% {
-  load(paste0("temp/sims_m20_n150_neff/simout-", x, "-covout.Rdata"))
+  load(paste0("analysis/temp/sims_m20_n150_neff/simout-", x, "-covout.Rdata"))
   
   temp = dat.gen.results %>%
     mutate(setting = x, size = 20,
             datframe = paste0("dat", rep(1:400, each = 104)))
   
-   load(paste0("temp/sims_m200_n150_neff/simout-", x, "-covout.Rdata"))
+   load(paste0("analysis/temp/sims_m200_n150_neff/simout-", x, "-covout.Rdata"))
   
    dat = dat.gen.results %>%
     mutate(setting = x, size = 200,
@@ -679,7 +810,7 @@ alldat <- alldat %>%
   rename(settingorig = setting) %>%
   mutate(setting = paste(paireff, n, tau_type, sep = "\n"))
 
-save(alldat,file = "temp/simresultdat_neff.Rdata")
+save(alldat,file = "analysis/temp/simresultdat_neff.Rdata")
 ```
 
 
@@ -713,14 +844,14 @@ tabdat <- alldat %>%
   right_join(vardatsum, by = c("method","est_type","setting","size")) %>%
   ungroup() 
 
-save(tabdat, file = "temp/varresultdat_neff.Rdata")
+save(tabdat, file = "analysis/temp/varresultdat_neff.Rdata")
 ```
 
 ### MSE
 
 
 ```{r}
-load("temp/simresultdat_neff.Rdata")
+load("analysis/temp/simresultdat_neff.Rdata")
 
 msese <- alldat %>%
   filter(est == "tau" & method %in% est.names.apx) %>%
@@ -801,7 +932,7 @@ for(p in c("Pair Effect", "No Pair Effect")) {
 
 ### Variance and Coverage
 ```{r}
-load("temp/varresultdat_neff.Rdata")
+load("analysis/temp/varresultdat_neff.Rdata")
 ```
 
 ```{r}
@@ -896,7 +1027,7 @@ for(m in c("covg", "rel_bias")){
 
 ## EDA
 ```{r}
-load("temp/cta-dat-clean.Rdata")
+load("analysis/temp/cta-dat-clean.Rdata")
 ```
 
 ### Sample Size Balance
@@ -956,8 +1087,8 @@ dev.off()
 
 ## Real Data Simulations
 
-````{r}
-load("temp/cta_plot/plotdat_ri_cta_tau10.Rdata")
+```{r}
+load("analysis/temp/cta_plot/plotdat_ri_cta_tau10.Rdata")
 
 mse.res5 <- mse.res %>%
   mutate(tau = "Constant Effect") 
@@ -966,10 +1097,10 @@ var.res5 <- var.res %>%
 covg.res5 <- covg.res %>%
   mutate(tau = "const")
 
-load("temp/cta_plot/plotdat_ri_cta_taun.Rdata")
+load("analysis/temp/cta_plot/plotdat_ri_cta_taun.Rdata")
 ```
 
-#### MSE
+### MSE
 
 
 ```{r}

@@ -28,8 +28,8 @@ library(dRCT)
 
 Load all helper functions
 ```{r}
-source("analysis/00-helper-functions.R")
-source("analysis/00-sim-helpers.R")
+source("00-helper-functions.R")
+source("00-sim-helpers.R")
 ```
 
 Estimators with associate labels

@@ -7,19 +7,8 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-library(tidyr)
-library(dplyr)
-library(sandwich)
-library(foreach)
-library(dRCT)
-library(tibble)
+library(tidyverse)
 library(kableExtra)
-library(parallel)
-library(doParallel)
-library(ggplot2)
-library(stringr)
-library(xtable)
-library(lme4)
 source("00-helper-functions.R")
 ```
 
@@ -71,8 +60,7 @@ size_balance <- dat %>%
   arrange(grdlvl)
 
 size_balance %>%
-  kable() %>%
-  kable_styling()
+  kable()
 ```
 
 

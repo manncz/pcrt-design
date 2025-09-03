@@ -7,18 +7,13 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-library(tidyr)
-library(dplyr)
+library(tidyverse)
 library(sandwich)
 library(foreach)
 library(dRCT)
-library(tibble)
 library(parallel)
 library(doParallel)
-library(stringr)
 library(lme4)
-library(kableExtra)
-library(ggplot2)
 
 source("00-helper-functions.R")
 ```
@@ -28,7 +23,6 @@ source("00-helper-functions.R")
 ```{r}
 load("temp/cta-dat-clean.Rdata")
 ```
-
 
 ```{r, dat, echo = F}
 dat.orig <- dat %>%
@@ -335,7 +329,7 @@ for(t in teffs){
 
   var.res.all <- all.sim %>%
     filter(est_type == "var") %>%
-    select(method, adj, var_type, nom_var = value) %>%
+    select(datframe, method, adj, var_type, nom_var = value) %>%
     left_join(dat.vartrue, by = c("adj", "method")) %>%
     group_by(adj, method, var_type) %>%
     mutate(rel_bias = nom_var/est_true_var) 
